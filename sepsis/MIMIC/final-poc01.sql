@@ -1,0 +1,300 @@
+﻿-- Criar tabela de pacientes adultos
+CREATE TABLE MASTER_S_DEGREE.ADULT_PATIENTS AS
+WITH
+    ADULT_ADMISSIONS AS (
+        SELECT DISTINCT
+            ADM.SUBJECT_ID,
+            EXTRACT(YEAR FROM ADM.ADMITTIME::TIMESTAMP) - P.ANCHOR_YEAR + P.ANCHOR_AGE AS CALCULATED_AGE
+        FROM
+            MIMICIV_HOSP.ADMISSIONS ADM
+            JOIN MIMICIV_HOSP.PATIENTS P ON ADM.SUBJECT_ID = P.SUBJECT_ID
+        WHERE
+            EXTRACT(YEAR FROM ADM.ADMITTIME::TIMESTAMP) - P.ANCHOR_YEAR + P.ANCHOR_AGE >= 18
+    )
+SELECT DISTINCT
+    SUBJECT_ID
+FROM
+    ADULT_ADMISSIONS;
+
+-- Criar índice para melhorar a performance de consultas futuras
+CREATE INDEX IDX_ADULT_PATIENTS_SUBJECT_ID ON MASTER_S_DEGREE.ADULT_PATIENTS (SUBJECT_ID);
+
+
+-- -----------------------------------------------------------------------------------------------------------------------------------------------------
+-- Criar tabela de primeiras admissões na UTI
+CREATE TABLE MASTER_S_DEGREE.FIRST_ICU_STAYS AS
+WITH RANKED_ICU_STAYS AS (
+    SELECT 
+        icu.SUBJECT_ID,
+        icu.STAY_ID,
+        icu.INTIME,
+        ROW_NUMBER() OVER (PARTITION BY icu.SUBJECT_ID ORDER BY icu.INTIME) AS ICU_ADMISSION_ORDER
+    FROM 
+        MIMICIV_ICU.ICUSTAYS icu
+)
+SELECT 
+    SUBJECT_ID,
+    STAY_ID
+FROM 
+    RANKED_ICU_STAYS
+WHERE 
+    ICU_ADMISSION_ORDER = 1;
+
+-- Criar índices para melhorar a performance de consultas futuras
+CREATE INDEX IDX_FIRST_ICU_STAYS_SUBJECT_ID ON MASTER_S_DEGREE.FIRST_ICU_STAYS (SUBJECT_ID);
+CREATE INDEX IDX_FIRST_ICU_STAYS_STAY_ID ON MASTER_S_DEGREE.FIRST_ICU_STAYS (STAY_ID);
+
+
+
+
+
+-- -- -----------------------------------------------------------------------------------------------------------------------------------------------------
+
+-- Criar tabela de estadias na UTI com duração mínima
+CREATE TABLE MASTER_S_DEGREE.ICU_STAYS_MIN_DURATION AS
+WITH RANKED_ICU_STAYS AS (
+    SELECT 
+        icu.SUBJECT_ID,
+        icu.STAY_ID,
+        icu.INTIME,
+        icu.OUTTIME,
+        EXTRACT(EPOCH FROM (icu.OUTTIME - icu.INTIME)) / 3600 AS LOS_HOURS,
+        ROW_NUMBER() OVER (PARTITION BY icu.SUBJECT_ID ORDER BY icu.INTIME) AS ICU_ADMISSION_ORDER
+    FROM 
+        MIMICIV_ICU.ICUSTAYS icu
+),
+FILTERED_STAYS AS (
+    SELECT 
+        SUBJECT_ID,
+        STAY_ID,
+        LOS_HOURS,
+        ICU_ADMISSION_ORDER,
+        CASE 
+            WHEN LOS_HOURS >= 24 THEN 'GTE_24H'
+            WHEN LOS_HOURS >= 12 THEN 'GTE_12H'
+            ELSE 'LT_12H'
+        END AS DURATION_CATEGORY
+    FROM 
+        RANKED_ICU_STAYS
+    WHERE 
+        LOS_HOURS >= 12 AND ICU_ADMISSION_ORDER = 1
+)
+SELECT 
+    SUBJECT_ID,
+    STAY_ID,
+    LOS_HOURS,
+    DURATION_CATEGORY
+FROM 
+    FILTERED_STAYS;
+
+-- Criar índices para melhorar a performance de consultas futuras
+CREATE INDEX IDX_ICU_STAYS_MIN_DURATION_SUBJECT_ID ON MASTER_S_DEGREE.ICU_STAYS_MIN_DURATION (SUBJECT_ID);
+CREATE INDEX IDX_ICU_STAYS_MIN_DURATION_STAY_ID ON MASTER_S_DEGREE.ICU_STAYS_MIN_DURATION (STAY_ID);
+CREATE INDEX IDX_ICU_STAYS_MIN_DURATION_DURATION ON MASTER_S_DEGREE.ICU_STAYS_MIN_DURATION (DURATION_CATEGORY);
+
+
+
+-- -----------------------------------------------------------------------------------------------------------------------------------------------------
+-- Criar tabela de pacientes com a flag de sepse baseada nos critérios Sepsis-3
+CREATE TABLE MASTER_S_DEGREE.SEPSIS_3_PATIENTS AS
+SELECT DISTINCT
+    subject_id,
+    stay_id,
+    sepsis3 AS is_sepsis  -- Renomeando para maior clareza, mas você pode manter 'sepsis3' se preferir
+FROM
+    mimiciv_derived.sepsis3;
+
+-- Criar índices para melhorar a performance de consultas futuras
+CREATE INDEX IDX_SEPSIS_3_PATIENTS_SUBJECT_ID ON MASTER_S_DEGREE.SEPSIS_3_PATIENTS (subject_id);
+CREATE INDEX IDX_SEPSIS_3_PATIENTS_STAY_ID ON MASTER_S_DEGREE.SEPSIS_3_PATIENTS (stay_id);
+CREATE INDEX IDX_SEPSIS_3_PATIENTS_IS_SEPSIS ON MASTER_S_DEGREE.SEPSIS_3_PATIENTS (is_sepsis);
+
+-- -----------------------------------------------------------------------------------------------------------------------------------------------------
+
+CREATE TABLE MASTER_S_DEGREE.SEPSIS_3_PATIENTS_EXCLUDED_PREEXISTING AS
+WITH
+    SEPSIS_ONSET AS (
+        SELECT
+            S3.SUBJECT_ID,
+            S3.STAY_ID,
+            S3.SOFA_TIME,
+            I.INTIME,
+            EXTRACT(
+                EPOCH
+                FROM
+                    (S3.SOFA_TIME - I.INTIME)
+            ) / 3600 AS HOURS_SINCE_ADMISSION,
+            S3.SEPSIS3
+        FROM
+            MIMICIV_DERIVED.SEPSIS3 S3
+            JOIN MIMICIV_ICU.ICUSTAYS I ON S3.STAY_ID = I.STAY_ID
+    )
+SELECT DISTINCT
+    SO.SUBJECT_ID,
+    SO.STAY_ID,
+    SO.SEPSIS3 AS IS_SEPSIS,
+    CASE 
+        WHEN SO.SEPSIS3 = true AND SO.HOURS_SINCE_ADMISSION > 6 THEN 1
+        WHEN SO.SEPSIS3 = false THEN 0
+        ELSE NULL  -- Indica sepse pré-existente ou muito precoce
+    END AS IS_NEW_SEPSIS
+FROM
+    SEPSIS_ONSET SO;
+
+-- Criar índices para melhorar a performance de consultas futuras
+CREATE INDEX IDX_SEPSIS_3_EXCLUDED_SUBJECT_ID ON MASTER_S_DEGREE.SEPSIS_3_PATIENTS_EXCLUDED_PREEXISTING (SUBJECT_ID);
+CREATE INDEX IDX_SEPSIS_3_EXCLUDED_STAY_ID ON MASTER_S_DEGREE.SEPSIS_3_PATIENTS_EXCLUDED_PREEXISTING (STAY_ID);
+CREATE INDEX IDX_SEPSIS_3_EXCLUDED_IS_SEPSIS ON MASTER_S_DEGREE.SEPSIS_3_PATIENTS_EXCLUDED_PREEXISTING (IS_SEPSIS);
+CREATE INDEX IDX_SEPSIS_3_EXCLUDED_IS_NEW_SEPSIS ON MASTER_S_DEGREE.SEPSIS_3_PATIENTS_EXCLUDED_PREEXISTING (IS_NEW_SEPSIS);
+
+-- -----------------------------------------------------------------------------------------------------------------------------------------------------
+
+-- Criar tabela temporária para uso de vasopressores
+CREATE TABLE MASTER_S_DEGREE.TMP_VASOPRESSOR_USE AS
+SELECT DISTINCT
+    ie.subject_id,
+    ie.stay_id,
+    1 AS on_vasopressor
+FROM 
+    mimiciv_icu.inputevents ie
+WHERE 
+    ie.itemid IN (
+        221906, -- norepinephrine
+        221289  -- phenylephrine
+        -- Adicione outros IDs de vasopressores conforme necessário
+    );
+
+CREATE INDEX idx_tmp_vasopressor_subject_id ON MASTER_S_DEGREE.TMP_VASOPRESSOR_USE (subject_id);
+CREATE INDEX idx_tmp_vasopressor_stay_id ON MASTER_S_DEGREE.TMP_VASOPRESSOR_USE (stay_id);
+
+-- Criar tabela temporária para hipotensão
+CREATE TABLE MASTER_S_DEGREE.TMP_HYPOTENSION AS
+SELECT DISTINCT
+    ce.subject_id,
+    ce.stay_id,
+    1 AS has_hypotension
+FROM 
+    mimiciv_icu.chartevents ce
+WHERE 
+    ce.itemid IN (220052, 220181) -- Systolic and Mean Arterial Pressure
+    AND ce.valuenum < 65; -- Threshold for hypotension
+
+CREATE INDEX idx_tmp_hypotension_subject_id ON MASTER_S_DEGREE.TMP_HYPOTENSION (subject_id);
+CREATE INDEX idx_tmp_hypotension_stay_id ON MASTER_S_DEGREE.TMP_HYPOTENSION (stay_id);
+
+-- Criar tabela temporária para lactato elevado
+CREATE TABLE MASTER_S_DEGREE.TMP_HIGH_LACTATE AS
+SELECT DISTINCT
+    ce.subject_id,
+    ce.stay_id,
+    1 AS has_high_lactate
+FROM 
+    mimiciv_icu.chartevents ce
+WHERE 
+    ce.itemid = 223835 -- Lactate
+    AND ce.valuenum > 2; -- Threshold for elevated lactate
+
+CREATE INDEX idx_tmp_high_lactate_subject_id ON MASTER_S_DEGREE.TMP_HIGH_LACTATE (subject_id);
+CREATE INDEX idx_tmp_high_lactate_stay_id ON MASTER_S_DEGREE.TMP_HIGH_LACTATE (stay_id);
+
+-- Criar tabela final combinando todas as informações
+CREATE TABLE MASTER_S_DEGREE.SEPSIS_AND_SHOCK_PATIENTS AS
+SELECT 
+    sep.SUBJECT_ID,
+    sep.STAY_ID,
+    sep.IS_SEPSIS,
+    sep.IS_NEW_SEPSIS,
+    CASE
+        WHEN sep.IS_SEPSIS = true AND v.on_vasopressor = 1 AND (h.has_hypotension = 1 OR l.has_high_lactate = 1) THEN 1
+        ELSE 0
+    END AS IS_SEPTIC_SHOCK
+FROM 
+    MASTER_S_DEGREE.SEPSIS_3_PATIENTS_EXCLUDED_PREEXISTING sep
+LEFT JOIN 
+    MASTER_S_DEGREE.TMP_VASOPRESSOR_USE v ON sep.STAY_ID = v.stay_id
+LEFT JOIN 
+    MASTER_S_DEGREE.TMP_HYPOTENSION h ON sep.STAY_ID = h.stay_id
+LEFT JOIN 
+    MASTER_S_DEGREE.TMP_HIGH_LACTATE l ON sep.STAY_ID = l.stay_id;
+
+-- Criar índices na tabela final
+CREATE INDEX idx_sepsis_shock_subject_id ON MASTER_S_DEGREE.SEPSIS_AND_SHOCK_PATIENTS (SUBJECT_ID);
+CREATE INDEX idx_sepsis_shock_stay_id ON MASTER_S_DEGREE.SEPSIS_AND_SHOCK_PATIENTS (STAY_ID);
+CREATE INDEX idx_sepsis_shock_is_sepsis ON MASTER_S_DEGREE.SEPSIS_AND_SHOCK_PATIENTS (IS_SEPSIS);
+CREATE INDEX idx_sepsis_shock_is_new_sepsis ON MASTER_S_DEGREE.SEPSIS_AND_SHOCK_PATIENTS (IS_NEW_SEPSIS);
+CREATE INDEX idx_sepsis_shock_is_septic_shock ON MASTER_S_DEGREE.SEPSIS_AND_SHOCK_PATIENTS (IS_SEPTIC_SHOCK);
+
+
+-- ------------------------------------------------------------------------------------------------------------------------------------
+CREATE TABLE MASTER_S_DEGREE.ALL_ADULT_ICU_PATIENTS AS
+SELECT 
+    ap.subject_id,
+    fis.stay_id,
+    COALESCE(ssp.IS_SEPSIS, false) AS is_sepsis,
+    CASE
+        WHEN ssp.IS_SEPSIS IS NULL THEN -1
+        ELSE COALESCE(ssp.IS_NEW_SEPSIS, 0)
+    END AS is_new_sepsis,
+    COALESCE(ssp.IS_SEPTIC_SHOCK, 0) AS is_septic_shock,
+    ismd.los_hours,
+    ismd.duration_category
+FROM 
+    MASTER_S_DEGREE.adult_patients ap
+JOIN 
+    MASTER_S_DEGREE.first_icu_stays fis ON ap.subject_id = fis.subject_id
+LEFT JOIN 
+    MASTER_S_DEGREE.SEPSIS_AND_SHOCK_PATIENTS ssp ON fis.stay_id = ssp.STAY_ID
+LEFT JOIN
+    MASTER_S_DEGREE.icu_stays_min_duration ismd ON fis.stay_id = ismd.stay_id;
+
+-- Criar índices na tabela final
+CREATE INDEX idx_all_adult_icu_subject_id ON MASTER_S_DEGREE.ALL_ADULT_ICU_PATIENTS (subject_id);
+CREATE INDEX idx_all_adult_icu_stay_id ON MASTER_S_DEGREE.ALL_ADULT_ICU_PATIENTS (stay_id);
+CREATE INDEX idx_all_adult_icu_is_sepsis ON MASTER_S_DEGREE.ALL_ADULT_ICU_PATIENTS (is_sepsis);
+CREATE INDEX idx_all_adult_icu_is_new_sepsis ON MASTER_S_DEGREE.ALL_ADULT_ICU_PATIENTS (is_new_sepsis);
+CREATE INDEX idx_all_adult_icu_is_septic_shock ON MASTER_S_DEGREE.ALL_ADULT_ICU_PATIENTS (is_septic_shock);
+CREATE INDEX idx_all_adult_icu_los_hours ON MASTER_S_DEGREE.ALL_ADULT_ICU_PATIENTS (los_hours);
+CREATE INDEX idx_all_adult_icu_duration_category ON MASTER_S_DEGREE.ALL_ADULT_ICU_PATIENTS (duration_category);
+-- --
+SELECT
+    CASE
+        WHEN is_sepsis = false THEN 'Sem sepse'
+        WHEN is_new_sepsis = 1 THEN 'Sepse nova (> 6 horas)'
+        WHEN is_new_sepsis = 0 THEN 'Sepse precoce ou pré-existente (≤ 6 horas)'
+        ELSE 'Erro de classificação'
+    END AS sepsis_category,
+    CASE
+        WHEN is_septic_shock = 1 THEN 'Com choque séptico'
+        ELSE 'Sem choque séptico'
+    END AS shock_status,
+    COUNT(*) as count
+FROM MASTER_S_DEGREE.ALL_ADULT_ICU_PATIENTS
+GROUP BY 1, 2
+ORDER BY 1, 2;
+-- --
+
+| is_sepsis | is_new_sepsis | is_septic_shock | Cenário | Explicação |
+|-----------|---------------|-----------------|---------|------------|
+| true      | 1             | 0               | Sepse Nova sem Choque Séptico | O paciente desenvolveu sepse após 6 horas da admissão na UTI, mas não progrediu para choque séptico. Isso pode indicar uma detecção e tratamento precoces ou uma forma menos grave de sepse. |
+| true      | 0             | 1               | Sepse Precoce/Pré-existente com Choque Séptico | O paciente tinha sepse na admissão ou a desenvolveu nas primeiras 6 horas, e progrediu para choque séptico. Isso sugere um caso mais grave ou rapidamente progressivo. |
+| true      | 0             | 0               | Sepse Precoce/Pré-existente sem Choque Séptico | O paciente tinha sepse na admissão ou a desenvolveu nas primeiras 6 horas, mas não progrediu para choque séptico. Pode indicar um tratamento eficaz ou uma forma menos grave de sepse. |
+| true      | 1             | 1               | Sepse Nova com Choque Séptico | O paciente desenvolveu sepse após 6 horas da admissão e posteriormente progrediu para choque séptico. Isso pode sugerir uma rápida deterioração ou uma resposta inadequada ao tratamento inicial. |
+| false     | -1            | 0               | Sem Sepse | O paciente não desenvolveu sepse durante sua estadia na UTI. Este grupo serve como controle para comparações com pacientes sépticos. |
+
+Observações adicionais:
+
+1. A categoria "Sepse Nova" (is_new_sepsis = 1) representa casos que se desenvolveram durante a internação na UTI, possivelmente devido a complicações do tratamento ou à condição subjacente do paciente.
+
+2. A categoria "Sepse Precoce/Pré-existente" (is_new_sepsis = 0) inclui tanto pacientes que chegaram à UTI com sepse quanto aqueles que a desenvolveram muito rapidamente após a admissão.
+
+3. A progressão para choque séptico (is_septic_shock = 1) é um indicador de gravidade e pode estar associada a piores resultados.
+
+4. Pacientes sem sepse (is_sepsis = false) formam um grupo de controle importante para comparações de resultados e fatores de risco.
+
+Esta tabela pode ser usada como referência rápida para interpretar os dados em suas análises e ao comunicar resultados. Ela também pode guiar análises mais profundas, como:
+
+- Comparar taxas de mortalidade entre os diferentes cenários.
+- Analisar o tempo de internação na UTI para cada grupo.
+- Investigar fatores que podem predispor pacientes a desenvolver sepse nova durante a internação.
+- Examinar as diferenças nos tratamentos e intervenções entre os grupos.
+- Avaliar o impacto do tempo de início da sepse (nova vs. precoce/pré-existente) nos resultados clínicos.

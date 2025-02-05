@@ -1,0 +1,417 @@
+.Considerando a hipótese: "A análise temporal dos sinais vitais de pacientes adultos internados em unidades de terapia intensiva do MIMIC-IV pode prever episódios de choque séptico com até 6 horas de antecedência, utilizando modelos de aprendizado de máquina"   
+
+
+
+Tenho vários pontos que preciso que você monte a consulta. Vou colocar um por vez, ok?
+
+
+* **Patient Selection**:
+  * **Adult Patients**: The studies consistently focus on **adult patients, typically defined as those 18 years or older**[1, 2, 3, 4]. Some studies use a lower age limit of 15 [5, 6]. This is a critical first step to ensure that the models are trained on a relevant patient population.
+
+WITH adult_patients AS (
+    SELECT DISTINCT p.subject_id, p.anchor_age, a.hadm_id, a.admittime
+    FROM mimiciv_hosp.patients p
+    INNER JOIN mimiciv_hosp.admissions a ON p.subject_id = a.subject_id
+    WHERE p.anchor_age >= 18
+)
+SELECT *
+FROM adult_patients limit 10;
+
+  * **ICU Admission**: Patients are selected based on their admission to the Intensive Care Unit (ICU). Often, only the first ICU admission is considered to prevent data duplication [4, 7, 8].
+
+WITH first_icu_stays AS (
+    SELECT icu.subject_id, 
+           icu.hadm_id, 
+           icu.stay_id,
+           icu.intime,
+           ROW_NUMBER() OVER (PARTITION BY icu.subject_id ORDER BY icu.intime) AS icu_admission_order
+    FROM mimiciv_icu.icustays icu
+    INNER JOIN mimiciv_hosp.patients p ON icu.subject_id = p.subject_id
+    WHERE p.anchor_age >= 18
+),
+first_adult_icu_admissions AS (
+    SELECT fis.subject_id, 
+           fis.hadm_id, 
+           fis.stay_id, 
+           fis.intime
+    FROM first_icu_stays fis
+    WHERE icu_admission_order = 1
+)
+SELECT *
+FROM first_adult_icu_admissions;
+
+  * **Minimum ICU Stay:** A **minimum length of stay in the ICU is often required, typically 24 hours or more**[3, 4, 7, 8, 9]. This ensures sufficient data points for time-series analysis. Some studies specifically require a 12 hour minimum ICU stay
+  
+WITH icu_stays_with_duration AS (
+    SELECT icu.subject_id, 
+           icu.hadm_id, 
+           icu.stay_id,
+           icu.intime,
+           icu.outtime,
+           EXTRACT(EPOCH FROM (icu.outtime - icu.intime))/3600 AS icu_duration_hours,
+           ROW_NUMBER() OVER (PARTITION BY icu.subject_id ORDER BY icu.intime) AS icu_admission_order
+    FROM mimiciv_icu.icustays icu
+    INNER JOIN mimiciv_hosp.patients p ON icu.subject_id = p.subject_id
+    WHERE p.anchor_age >= 18
+),
+first_adult_icu_admissions_min_stay AS (
+    SELECT cid.subject_id, 
+           cid.hadm_id, 
+           cid.stay_id, 
+           cid.intime,
+           cid.outtime,
+           cid.icu_duration_hours
+    FROM icu_stays_with_duration cid
+    WHERE icu_admission_order = 1
+      AND icu_duration_hours >= 24  -- Mínimo de 24 horas
+    -- AND icu_duration_hours >= 12  -- Descomente esta linha e comente a anterior para usar 12 horas como mínimo
+)
+SELECT *
+
+FROM first_adult_icu_admissions_min_stay;  
+  
+  
+* **Sepsis Definition:**
+  * **Sepsis-3 Criteria:** Many studies use the **Sepsis-3 criteria** to define sepsis, which includes suspected or documented infection, a Sequential Organ Failure Assessment (SOFA) score of 2 or more and microbial culture results indicating an infection. [8, 9, 10]
+  
+  WITH icu_stays AS (
+    SELECT icu.subject_id, 
+           icu.hadm_id, 
+           icu.stay_id,
+           icu.intime,
+           icu.outtime,
+           EXTRACT(EPOCH FROM (icu.outtime - icu.intime))/3600 AS icu_duration_hours,
+           ROW_NUMBER() OVER (PARTITION BY icu.subject_id ORDER BY icu.intime) AS icu_admission_order
+    FROM mimiciv_icu.icustays icu
+    INNER JOIN mimiciv_hosp.patients p ON icu.subject_id = p.subject_id
+    WHERE p.anchor_age >= 18
+      AND EXTRACT(EPOCH FROM (icu.outtime - icu.intime))/3600 >= 24
+),
+infection_suspicion AS (
+    SELECT DISTINCT ie.stay_id
+    FROM icu_stays ie
+    INNER JOIN mimiciv_hosp.diagnoses_icd diag ON ie.hadm_id = diag.hadm_id
+    WHERE diag.icd_code LIKE 'A%' OR diag.icd_code LIKE 'B%' OR diag.icd_code IN ('R65.20', 'R65.21')
+),
+sofa_scores AS (
+    SELECT sf.stay_id,
+           sf.sofa_24hours
+    FROM mimiciv_derived.sofa sf
+    INNER JOIN icu_stays ic ON sf.stay_id = ic.stay_id
+    WHERE sf.sofa_24hours >= 2
+),
+positive_cultures AS (
+    SELECT DISTINCT ic.stay_id
+    FROM mimiciv_hosp.microbiologyevents m
+    INNER JOIN icu_stays ic ON m.hadm_id = ic.hadm_id
+    WHERE m.org_name IS NOT NULL
+),
+sepsis_cases AS (
+    SELECT i.stay_id
+    FROM infection_suspicion i
+    INNER JOIN sofa_scores s ON i.stay_id = s.stay_id
+    INNER JOIN positive_cultures p ON i.stay_id = p.stay_id
+)
+SELECT 
+    COUNT(DISTINCT sc.stay_id) AS total_sepsis_cases,
+    AVG(s.sofa_24hours) AS avg_sofa_score,
+    MIN(s.sofa_24hours) AS min_sofa_score,
+    MAX(s.sofa_24hours) AS max_sofa_score
+FROM sepsis_cases sc
+INNER JOIN sofa_scores s ON sc.stay_id = s.stay_id;
+  
+  * **Exclusion of Pre-existing Sepsis**: Some studies specifically **exclude patients who were admitted with sepsis** [11]. This is because the goal is often to predict the *onset* of sepsis, not its presence upon admission.
+
+  WITH icu_stays AS (
+    SELECT icu.subject_id, 
+           icu.hadm_id, 
+           icu.stay_id,
+           icu.intime,
+           icu.outtime,
+           EXTRACT(EPOCH FROM (icu.outtime - icu.intime))/3600 AS icu_duration_hours,
+           ROW_NUMBER() OVER (PARTITION BY icu.subject_id ORDER BY icu.intime) AS icu_admission_order
+    FROM mimiciv_icu.icustays icu
+    INNER JOIN mimiciv_hosp.patients p ON icu.subject_id = p.subject_id
+    WHERE p.anchor_age >= 18
+      AND EXTRACT(EPOCH FROM (icu.outtime - icu.intime))/3600 >= 24
+),
+sepsis_on_admission AS (
+    SELECT DISTINCT hadm_id
+    FROM mimiciv_hosp.diagnoses_icd
+    WHERE icd_code IN ('A419', 'R6520', 'R6521')
+      AND seq_num = 1
+),
+infection_suspicion AS (
+    SELECT DISTINCT ie.stay_id
+    FROM icu_stays ie
+    INNER JOIN mimiciv_hosp.diagnoses_icd diag ON ie.hadm_id = diag.hadm_id
+    WHERE (diag.icd_code LIKE 'A%' OR diag.icd_code LIKE 'B%' OR diag.icd_code IN ('R6520', 'R6521'))
+      AND ie.hadm_id NOT IN (SELECT hadm_id FROM sepsis_on_admission)
+),
+sofa_scores AS (
+    SELECT sf.stay_id,
+           sf.sofa_24hours
+    FROM mimiciv_derived.sofa sf
+    INNER JOIN icu_stays ic ON sf.stay_id = ic.stay_id
+    WHERE sf.sofa_24hours >= 2
+),
+positive_cultures AS (
+    SELECT DISTINCT ic.stay_id
+    FROM mimiciv_hosp.microbiologyevents m
+    INNER JOIN icu_stays ic ON m.hadm_id = ic.hadm_id
+    WHERE m.org_name IS NOT NULL
+),
+sepsis_cases AS (
+    SELECT i.stay_id
+    FROM infection_suspicion i
+    INNER JOIN sofa_scores s ON i.stay_id = s.stay_id
+    INNER JOIN positive_cultures p ON i.stay_id = p.stay_id
+)
+SELECT 
+    COUNT(DISTINCT sc.stay_id) AS total_sepsis_cases,
+    AVG(s.sofa_24hours) AS avg_sofa_score,
+    MIN(s.sofa_24hours) AS min_sofa_score,
+    MAX(s.sofa_24hours) AS max_sofa_score
+FROM sepsis_cases sc
+INNER JOIN sofa_scores s ON sc.stay_id = s.stay_id;
+
+??????  * **Septic Shock Identification:** While the query focuses on septic shock, most studies focus on sepsis as a precursor, and some do not distinguish between sepsis and septic shock [2].  In one study septic shock was defined by the need for vasopressors due to hypotension and an elevated lactate level [12].
+
+
+* **Time-Series Data Extraction:**
+  * **Vital Signs:** The primary focus is on extracting time-series data of vital signs. Common vital signs include heart rate (HR), respiratory rate (RR), oxygen saturation (SpO2), and mean arterial pressure (MAP) [13]. These are considered crucial for monitoring the progression of sepsis and are easily and regularly collected.
+  
+  WITH icu_stays AS (
+    SELECT icu.subject_id, 
+           icu.hadm_id, 
+           icu.stay_id,
+           icu.intime,
+           icu.outtime,
+           EXTRACT(EPOCH FROM (icu.outtime - icu.intime))/3600 AS icu_duration_hours,
+           ROW_NUMBER() OVER (PARTITION BY icu.subject_id ORDER BY icu.intime) AS icu_admission_order
+    FROM mimiciv_icu.icustays icu
+    INNER JOIN mimiciv_hosp.patients p ON icu.subject_id = p.subject_id
+    WHERE p.anchor_age >= 18
+      AND EXTRACT(EPOCH FROM (icu.outtime - icu.intime))/3600 >= 24
+),
+sepsis_on_admission AS (
+    SELECT DISTINCT hadm_id
+    FROM mimiciv_hosp.diagnoses_icd
+    WHERE icd_code IN ('A419', 'R6520', 'R6521')
+      AND seq_num = 1
+),
+infection_suspicion AS (
+    SELECT DISTINCT ie.stay_id
+    FROM icu_stays ie
+    INNER JOIN mimiciv_hosp.diagnoses_icd diag ON ie.hadm_id = diag.hadm_id
+    WHERE (diag.icd_code LIKE 'A%' OR diag.icd_code LIKE 'B%' OR diag.icd_code IN ('R6520', 'R6521'))
+      AND ie.hadm_id NOT IN (SELECT hadm_id FROM sepsis_on_admission)
+),
+sofa_scores AS (
+    SELECT sf.stay_id,
+           sf.sofa_24hours
+    FROM mimiciv_derived.sofa sf
+    INNER JOIN icu_stays ic ON sf.stay_id = ic.stay_id
+    WHERE sf.sofa_24hours >= 2
+),
+positive_cultures AS (
+    SELECT DISTINCT ic.stay_id
+    FROM mimiciv_hosp.microbiologyevents m
+    INNER JOIN icu_stays ic ON m.hadm_id = ic.hadm_id
+    WHERE m.org_name IS NOT NULL
+),
+sepsis_cases AS (
+    SELECT i.stay_id
+    FROM infection_suspicion i
+    INNER JOIN sofa_scores s ON i.stay_id = s.stay_id
+    INNER JOIN positive_cultures p ON i.stay_id = p.stay_id
+),
+vital_signs AS (
+    SELECT ce.stay_id,
+           ce.charttime,
+           CASE 
+               WHEN ce.itemid = 220045 THEN 'Heart Rate'
+               WHEN ce.itemid = 220210 THEN 'Respiratory Rate'
+               WHEN ce.itemid = 220277 THEN 'SpO2'
+               WHEN ce.itemid = 220052 THEN 'MAP'
+           END AS vital_sign,
+           ce.valuenum
+    FROM mimiciv_icu.chartevents ce
+    INNER JOIN sepsis_cases sc ON ce.stay_id = sc.stay_id
+    INNER JOIN icu_stays ip ON ce.stay_id = ip.stay_id
+    WHERE ce.itemid IN (220045, 220210, 220277, 220052)  -- HR, RR, SpO2, MAP
+      AND ce.valuenum IS NOT NULL
+      AND ce.charttime BETWEEN ip.intime AND ip.outtime
+)
+SELECT 
+    vs.stay_id,
+    vs.charttime,
+    MAX(CASE WHEN vs.vital_sign = 'Heart Rate' THEN vs.valuenum END) AS heart_rate,
+    MAX(CASE WHEN vs.vital_sign = 'Respiratory Rate' THEN vs.valuenum END) AS respiratory_rate,
+    MAX(CASE WHEN vs.vital_sign = 'SpO2' THEN vs.valuenum END) AS spo2,
+    MAX(CASE WHEN vs.vital_sign = 'MAP' THEN vs.valuenum END) AS map,
+    s.sofa_24hours
+FROM vital_signs vs
+INNER JOIN sofa_scores s ON vs.stay_id = s.stay_id
+GROUP BY vs.stay_id, vs.charttime, s.sofa_24hours
+ORDER BY vs.stay_id, vs.charttime;
+  
+  * **Time Windows**: Data is usually extracted within specific time windows. For instance, vital signs are extracted for the **24 hours prior to a prediction point**[13, 14, 15, 16].  Some studies use a **6-hour sliding window** to capture temporal dependencies in vital signs [17]. Some models are trained to predict mortality or sepsis within a time frame (k) of 6, 24, or 48 hours [13, 18].
+  * **Irregular Intervals:** Studies also acknowledge that vital signs are collected at irregular intervals in clinical settings, requiring a time-aware mechanism, such as a time decay function. [18]
+  * **Forecasting:** Some studies forecast vital signs up to 3 hours into the future, using 6 hours of past data. [14]
+  * **Lookback Window:** In one study, a lookback window of 6 hours of data was used to train a model to predict sepsis onset 4, 8, and 12 hours before it occurs. [19]
+* **Data Cleaning & Imputation:**
+  * **Error Records:** Studies identify and remove error records. For example, heart rate values outside the range of 30-260, respiratory rates outside 5-70, SpO2 outside of 0-100, and MAP outside of 10-200 are deleted. [13]
+  * **Missing Values:** Missing data is handled using various techniques including:
+    * **Forward fill:** Propagating the last available value forward. [20]
+    * **Mean Imputation:** Replacing missing values with the mean value of the feature either across the entire dataset or on a per-patient basis. [21]
+    * **Linear Imputation:** Estimating missing data points using the values before and after the gap. [21]
+    * **Multiple Imputation:** A more advanced method, using other variables to impute missing values. [22]
+    * **Masked Prediction:** Using a model's pre-training to fill in missing values based on the surrounding data. [18]
+  * **Outlier Removal**: Outliers are removed from the dataset [23]. In one study, vital signs were limited to ranges deemed acceptable, such as a heart rate between 30 and 200 [24].
+* **Feature Engineering**:
+  * **Aggregation:** Time-series data is often aggregated over intervals, like hourly means or using maximum, minimum, and mean values for a window of time, often the first 24 hours [23, 25, 26].
+  * **Trend calculation**: The change in the variable value over time is calculated and used as a feature [23].
+  * **Clinical Scores:** Relevant clinical scores such as SOFA and SAPS II are computed and included as features [22, 27].
+* **Data Splitting:**
+  * The data is split into training, validation, and testing sets for model development [2]. Some studies use cross-validation to assess the model's generalizability [28].
+By carefully selecting patients, extracting relevant time-series data, addressing data quality issues, and engineering informative features, these studies aim to build robust machine learning models that can effectively predict septic shock using the MIMIC-IV database.
+----
+[1]predictive_model_of_risk_factors_for_28‑day_mortality_in_patients_with_sepsis_or_sepsis‑associated_delirium_based_on_the_mimic‑iv_database.pdf
+The present study was designed to screen adult patients who met the diagnostic criteria for Sepsis 3 through the MIME-IV database, based on the third International consensus definition of sepsis and septic shock, or SAD, for key features of sepsis onset or progression to SAD. Based on these characteristics, a prediction model of risk factors for the onset or development of sepsis into SAD was constructed to facilitate early identification and intervention and improve the prognosis of patients.
+Methods Data source Patient-related information was screened from the MIMIC-IV database, including demographic information, vital signs, laboratory tests, treatment, diagnosis, assessment, and prognosis. The data were verified by several studies to be of high quality. Access to the database was obtained for the present study (database authorization certificate ID: 57,771,514), and the database is available to all investigators who comply with the requirements for its use (https:// mimic. physi onet. org)13. Data were extracted from the database for all adult patients (aged ≥ 18 years) admitted to the ICU who met the inclusion criteria. Patients with significant missing information were excluded.
+[2]development_of_a_nomogram_to_predict_30-day_mortality_of_sepsis_patients_with_gastrointestinal_bleeding_an_analysis_of_the_mimic-iv_database.pdf
+A R T I C L E I N F O
+Keywords: Sepsis Gastrointestinal bleeding GIB Nomogram MIMIC-IV
+A B S T R A C T
+Background: We aimed to establish and validate a prognostic nomogram model for improving the prediction of 30-day mortality of gastrointestinal bleeding (GIB) in critically ill patients with severe sepsis. Methods: In this retrospective study, the current retrospective cohort study extracted data from the Medical Information Mart for Intensive Care IV (MIMIC-IV) database, then partitioned the cohort randomly into training and validation subsets. The cohort was partitioned into training and validation subsets randomly. Our primary endpoint was 30-day all-cause mortality. To reduce data dimensionality and identify predictive variables, the least absolute shrinkage and selection operator (LASSO) regression was employed. A prediction model was constructed by multivariate logistic regression. Model performance was evaluated using the concordance index (C-index), receiver operating characteristic (ROC) curve, and decision curve analysis (DCA). Results: The analysis included 1435 total patients, comprising 1005 in the training cohort and 430 in the validation cohort. We found that age, smoking status, glucose, (BUN), lactate, Sequential Organ Failure Assessment (SOFA) score, mechanical ventilation≥48h (MV), parenteral nutrition (PN), and chronic obstructive pulmonary disease (COPD) independently influenced mortality in sepsis patients with concomitant GIB. The C-indices were 0.746 (0.700–0.792) and 0.716 (0.663–0.769) in the training and validation sets, respectively. Based on the area under the curve (AUC) and DCA, the nomogram exhibited good discrimination for 30-day all-cause mortality in sepsis with GIB. Conclusions: For sepsis patients complicated with GIB, we created a unique nomogram model to predict the 30-day all-cause mortality. This model could be a significant therapeutic tool for clinicians in terms of personalized treatment and prognosis prediction.
+[3]prediction_of_sepsis_mortality_in_icu_patients_using_machine_learning_methods.pdf
+To narrow down the target patients, we applied the fol-lowing criteria. These criteria stipulated that only adult patients (aged 18 and above) with a minimum intensive care unit (ICU) stay of over 24 hours were considered to guarantee ample data for a thorough analysis. Further-more, the study targeted patients diagnosed with sepsis based on the Third International Consensus Definitions for Sepsis and Septic Shock (Sepsis-3), with a Sequential Organ Failure Assessment (SOFA) score of 2 or higher and a suspected infection as recorded in the MIMIC-IV database. This study implements BigQuery as the data extraction tool to select the target patients from the dataset.
+[4]predicting_30-days_mortality_for_mimic-iii_patients_with_sepsis-3_a_machine_learning_approach_using_xgboost.pdf
+Study population Adult patients who were diagnosed with sepsis-3 were included in our study. The inclusion criteria were: (I) patients who were older than 18 years old; (II) length of stay in the ICU was over 24  h to ensure sufficient data for analysis; (III) patients with the diagnosed of sepsis according to The Third International Consensus Defini-tions for Sepsis and Septic Shock (sepsis-3) [2]. Because
+Page 3 of 14Hou et al. J Transl Med (2020) 18:462
+MIMIC-III database has shifted their date of birth to obscure their age, we excluded patients who were over 89  years, and if a patient had multiple admissions with sepsis, only the first admission was analyzed. As it is common with missing data in the MIMIC-III database, we also removed the variables with more than 20% obser-vations missing to facilitate and ensure the accuracy of the review. However, for those with less than 20% missing data or randomly missing data, we explored and visual-ized them with Templ’s method (R Package “VIM”) [14] and multiple imputation method (R Package “mice”) [15] for further analysis respectively.
+[5]prediction_of_sepsis_in_the_intensive_care_unit_with_minimal_electronic_health_record_data.pdf
+Table 1. Windows of suspected infection, as defined by the presence of a culture and antibiotic administration, following Seymour et al [11].
+Window in which second event must occurFirst event
+Culture taken in the following 72 hoursAntibiotics administered
+Antibiotics administered in the following 24 hoursCulture taken
+Selected Clinical Measurements and Patient Inclusion The learning method employed by InSight is flexible with regard to the patient data it uses. For the present work, we have selected systolic blood pressure, pulse pressure, heart rate, respiration rate, temperature, peripheral capillary oxygen saturation (SpO2), age, and Glasgow Coma Score (GCS). All of these features are nearly universally available at the bedside and do not rely on laboratory tests. There is disagreement about which patient measurements constitute vital signs with the most restrictive definitions only including temperature, heart rate, blood pressure, and respiratory rate, and the most inclusive ones including all of the patient data used in this study with the exception of age [13,14]. Thus, we have collectively labeled the set of measurements used in this study as “extended vitals.” Although we train and test our method in the ICU, we note that these or similar features should also be available in other settings. Successful prediction from a minimal set of extended vital signs allows for general application of our approach. This feature is particularly useful for patients that cannot be assessed using other scoring systems (eg, SOFA). We exclude all ICU stays from consideration if any of the following are true: the patient was not at least 15 years old (to eliminate pediatric patients); no measurements were recorded in the ICU; the ICU data was logged using CareVue, rather than Metavision; one or more of the measurements required for our predictor were not recorded at any time during the ICU stay; sepsis onset as defined above occurs, but is more than 500 or less than 7 hours into the
+[6]an_attention-based_bidirectional_lstm-cnn_architecture_for_the_early_prediction_of_sepsis.pdf
+EHRs
+Data Normalization
+Processed Data
+Sequence Generation
+Fig. 2 Steps in preprocessing block
+data consistency. The focus then shifted towards selecting patient records, specifically targeting those aged 15 years and above, in recognition of the differing sepsis criteria in children. Finally, we narrowed down the dataset further, opt-ing to include only those records where the patient’s ICU stay exceeded 12h.
+Table 1 An example imputation for leukocyte count
+Hour Real values Imputed values
+2 7.4
+[7]development_of_a_nomogram_to_predict_30-day_mortality_of_sepsis_patients_with_gastrointestinal_bleeding_an_analysis_of_the_mimic-iv_database.pdf
+2.2. Study population and data exclusion
+The database was screened to identify sepsis-associated ICU admissions for adults (age ≥18 years). For this study, only data from the first ICU admission of each episode was utilized. Furthermore, patients hospitalized for <24 h or with preexisting cirrhosis were omitted.
+This research included patients from the MIMIC-IV database who satisfied the criteria for sepsis. The Sepsis-3 criteria were used to define sepsis [4]. To identify the cohort and extract the relevant clinical information, structured query language (SQL) was employed. Specifically, the SQL queries retrieved the first available patient data documented after admission, comprising demographics, vital signs, laboratory tests, and baseline problems. ICD-9 and ICD-10 diagnosis codes were used to identify GIB and concomitant conditions.
+[8]predictive_model_of_risk_factors_for_28‑day_mortality_in_patients_with_sepsis_or_sepsis‑associated_delirium_based_on_the_mimic‑iv_database.pdf
+Study participants In this study, Structured Query Language (SQL) via Navicat Premium (version 15.0) was used to extract meaningful baseline clinical data based on the “subject_id” of each patient in the ICU. If a patient’s data was measured multiple times, only the first measurement was used14. Patient information was extracted from the MIMIC-IV database according to the following inclusion criteria: (1) first admission to the ICU; (2) age of ≥ 18 years; (3) diagnosis of sepsis; (4) length of stay in the ICU of ≥ 24 h; and (5) completion of delirium assessment. The diagnosis of sepsis was based on the definition of Sepsis-3, including patients with documented or suspected infection, SOFA scores of ≥ 2, and microbial culture results that clearly indicate infection15,16. The CAM-ICU was used to screen and identify delirium. Patients with sepsis who had a positive delirium assessment were defined as having SAD, and those with delirium associated with drug or alcohol abuse, neurological disorders, mental disorders, and other conditions were excluded17,18. Finally, the modeling group in this study included 598 patients (358 men and 240 women). The validation group included 269 patients with sepsis or SAD who were admitted to the Department of Intensive Care Medicine of a grade A tertiary hospital in Xinjiang, China, between February 2018 and December 2022. This study complied with the medical ethics standards of the Declaration of Helsinki and was approved by the Ethics Committee of the First Affiliated Hospital of Xinjiang Medical University (ethics approval no.: K202301-43). The patient enrollment process of the study is illustrated in Fig. 1
+[9]machine-learning_models_for_prediction_of_sepsis_patients_mortality.pdf
+atients
+he patients were identified in the MIMIC-IV database from 008 to 2019 as the train set and the eICU-CRD database rom 2014 to 2015 as the test set. Adult patients diagnosed ith sepsis-3 were included in our study.1 The inclusion cri-
+eria were as follows: (1) patients who were older than 18 ears old; (2) length of stay in the ICU was over 24 h to nsure sufficient data for analysis; (3) patients the diag-osed with sepsis according to The Third International onsensus Definitions for Sepsis and Septic Shock (sepsis-), SOFA ≥ 2 and suspected infection in MIMIC-IV, and in the ICU-CRD, diagnosis sepsis 3.0 is used for sepsis patients ith ‘sepsis’ and ‘septic’ in the discharge diagnosis and OFA ≥ 2 because there is no bacterial culture information, nd the detailed codes can be found on the git-hub code; 4) patients who were the first admission in ICU. In this tudy, variables extracted from the database cover patients’ ender, age, height, weight, race, and various historical isease information. Clinical information of the patients ncludes different laboratory items, urine output, vasopres-ors, mechanical ventilation, GCS score, etc. The detailed ode for extracting the data we uploaded to the git-hub site https://github.com/BboyT/sepsis predict) and we refer to he code of Sepsis 3.0 in MIMIC.26 The detailed process of ata extraction is shown in Fig. 1.
+tudy design and setting
+[10]early_sepsis_mortality_prediction_model_based_on_interpretable_machine_learning_approach_development_and_validation_study.pdf
+Patients and definitions
+The screening process in this study employed the sepsis criteria established in 2016, known as Sepsis-3, to identify patients with sepsis. We initially chose patients who satisfied either of the following two conditions within a time frame ranging from 24 h prior to ICU admission to 24 h after: 1. By meticulously documenting infection-related diagnoses using the International Classification of Diseases, ninth revi-sion, Clinical Modification (ICD-9-CM) codes, as provided by Angus et al. [19]; 2.Meeting the criteria for a suspected infection as outlined by Seymour CW et al. [20]. We then recognized subsequent organ malfunction as a sudden altera-tion in SOFA score of at least 2 points during the initial 24 h of being in the ICU. We only included the initial ICU
+[11]early_prediction_of_sepsis_using_time_series_forecasting_01.pdf
+IV. DATA
+A. MIMIC-III
+Medical Information Mart for Intensive Care 3 (MIMIC-III) is a large database consisting of patients who stayed in the critical care unit at the Beth Israel Deaconess Medical Center between 2001 and 2012. [14] The database consists of twenty six tables. Some examples of the tables include clinical notes, chartevents, admissions and microbiology events. For the full list of tables please refer to Table 4 in [14].
+B. Sepsis Label Annotation
+Our project is based on the STraTS architecture [1], and as such, we utilized their preprocessing approach to prepare the data in the required format. The authors of [1], however, focus on mortality prediction, which requires a mortality label. In our approach to predict sepsis we need to perform a sepsis check that was introduced earlier in this paper. To identify and label patients with sepsis, ICD9 codes from the diagnosis table have been used. In total, we used 23 codes related to sepsis, as listed in Table VII in the Appendix B. After the data is generated, a sepsis label is assigned to the hospital admission id. Furthermore, we filtered out patients who were admitted with sepsis from our dataset, by parsing the admissions table from MIMIC-III. ICD9 codes are not present in the admission table, therefore, the patients were filtered out based on string matches. These patients have been excluded because the forecasting model cannot benefit by learning from them.
+[12]predico_de_sepse_em_unidade_de_terapia_intensiva_uma_abordagem_de_aprendizado_de_maquina.pdf
+1. Introdução A sepse é uma condição caracterizada pela resposta exacerbada do organismo a uma infecção [Singer et al. 2016]. Órgãos e tecidos do próprio individuo são prejudicados, levando à disfunção orgânica. Um estágio mais avançado é o choque séptico, no qual o paciente necessita de medicamentos vasopressores devido a um quadro de hipotensão e um nı́vel sérico de lactato elevado, mesmo com reposição volêmica. Na inexistência de um procedimento de teste diagnóstico padrão ouro, identifica-se essa sı́ndrome, em um paciente com suspeita de infecção, através de um conjunto de sinais clı́nicos e sintomas.
+[13]PT3_A_Transformer-based_Model_for_Sepsis_Death_Risk_Prediction_via_Vital_Signs_Time_Series.pdf
+III. PRELIMINARIES
+A. Problem statement
+We define the sepsis death risk prediction problem as predicting the risk of death in the next k hours (k = 6, 24, 48) of a sepsis patient given the vital signs records in the past 24 hours. The vital signs we concern about in this work include heart rate (HR), respiratory rate (RR), oximetry saturation (SpO2), and the mean arterial pressure (MAP), which are closely related to the progression of sepsis and easy to collect. We extract sepsis patients from MIMIC-IV [27] and eICU [28] database following the method described in [29], and then collect four vital signs records from their ICU admission to discharge or death. We regard HR records out of the range [30, 260], RR records out of the range [5, 70], SpO2 records out of the range [0, 100], and MAP records out of the range [10, 200] as error records and delete them.
+[14]Vital_Sign_Forecasting_for_Sepsis_Patients_in_ICUs.pdf
+Vital Sign Forecasting for Sepsis Patients in ICUs
+Anubhav Bhatti1, Yuwei Liu1,2, Chen Dan1,2, Bingjie Shen1,2, San Lee1, Yonghwan Kim3, Jang Yong Kim4
+1AI Engineering Team, SpassMed Inc., 2University of Toronto, Canada, 3Spass Inc., 4St. Mary’s Hospital, South Korea
+(anubhav.bhatti, yuwei.liu, chen.dan, bingjie.shen, sanlee)@spassmed.ca, kyh@spass.ai, vasculakim@catholic.ac.kr
+Abstract—Sepsis and septic shock are a critical medical condi-tion affecting millions globally, with a substantial mortality rate. This paper uses state-of-the-art deep learning (DL) architectures to introduce a multi-step forecasting system to predict vital signs indicative of septic shock progression in Intensive Care Units (ICUs). Our approach utilizes a short window of historical vital sign data to forecast future physiological conditions. We introduce a DL-based vital sign forecasting system that predicts up to 3 hours of future vital signs from 6 hours of past data. We further adopt the DILATE loss function to capture better the shape and temporal dynamics of vital signs, which are critical for clinical decision-making. We compare three DL models, N-BEATS, N-HiTS, and Temporal Fusion Transformer (TFT), using the publicly available eICU Collaborative Research Database (eICU-CRD), highlighting their forecasting capabilities in a critical care setting. We evaluate the performance of our models using mean squared error (MSE) and dynamic time warping (DTW) metrics. Our findings show that while TFT excels in capturing overall trends, N-HiTS is superior in retaining short-term fluctuations within a predefined range. This paper demonstrates the potential of DL in transforming the monitoring systems in ICUs, potentially leading to significant improvements in patient care and outcomes by accurately forecasting vital signs to assist healthcare providers in detecting early signs of physiological instability and anticipating septic shock.
+[15]a_time_series_driven_model_for_early_sepsis_prediction_based_on_transformer_module_01.pdf
+Based on the patient table and diagnosis table extracted from the eICU database, we conducted essen-tial patient inclusion and exclusion operations, select-ing patients whose diagnosis includes the keyword "sepsis," and ensuring their diagnostic status is "valid" upon discharge. We also ensured that patients were 18 years of age or older. Furthermore, given that we are establishing a time-series model, it was necessary to collect data for patients over a specific period. There-fore, we opted for patients with a hospital stay exceed-ing one day. We gathered clinical baseline information, all test data during their hospitalization, and vital sign data (both regular and irregular), which served as the foundation for the time-series model. The distinction between the control group and the sepsis group lies in the absence of any "sepsis" incidents during the hospi-talization of patients in the control group. Therefore, we randomly selected 9,000 samples as the control group and excluded patients with missing data exceed-ing 30% based on the results. In the end, the sepsis group included 9,092 individuals, while the control group consisted of 8,840 individuals (as illustrated in Fig. 1). Additionally, we have collected 38,895 external test cases from the MIMIC database following the same standards (Non-sepsis: 34,345, Sepsis: 4550) to validate the effectiveness of the model.
+[16]a_time_series_driven_model_for_early_sepsis_prediction_based_on_transformer_module_01.pdf
+BMC Medical Research Methodology
+A time series driven model for early sepsis prediction based on transformer module
+Yan Tang1†, Yu Zhang2† and Jiaxi Li1*
+Abstract
+Sepsis remains a critical concern in intensive care units due to its high mortality rate. Early identification and interven-tion are paramount to improving patient outcomes. In this study, we have proposed predictive models for early sepsis prediction based on time-series data, utilizing both CNN-Transformer and LSTM-Transformer architectures. By collect-ing time-series data from patients at 4, 8, and 12 h prior to sepsis diagnosis and subjecting it to various network mod-els for analysis and comparison. In contrast to traditional recurrent neural networks, our model exhibited a substantial improvement of approximately 20%. On average, our model demonstrated an accuracy of 0.964 (± 0.018), a precision of 0.956 (± 0.012), a recall of 0.967 (± 0.012), and an F1 score of 0.959 (± 0.014). Furthermore, by adjusting the time win-dow, it was observed that the Transformer-based model demonstrated exceptional predictive capabilities, particularly within the earlier time window (i.e., 12 h before onset), thus holding significant promise for early clinical diagnosis and intervention. Besides, we employed the SHAP algorithm to visualize the weight distribution of different features, enhancing the interpretability of our model and facilitating early clinical diagnosis and intervention.
+[17]predico_de_sepse_em_unidade_de_terapia_intensiva_uma_abordagem_de_aprendizado_de_maquina.pdf
+A manifestação fisiológica da sepse dá-se pela evolução de métricas do organismo no tempo [Singer et al. 2016]. Sendo assim, condiciona-se indispensável considerar não somente os dados de apenas uma observação, mas a evolução dentro de uma janela tem-poral. Portanto, define-se uma janela deslizante de 6 horas. Isto é, dada uma observação no instante de tempo t, são concatenados a este os dados de t−1 até t−5.
+Os algoritmos de aprendizado de máquina avaliados neste trabalho foram: re-gressão logı́stica (logistic regression), árvore de decisão (decision tree), floresta aleatória (random forest) e naı̈ve Bayes. Em seguida, técnicas baseadas em boosting foram adota-das, como o AdaBoost, XGBoost e LightGBM.
+[18]PT3_A_Transformer-based_Model_for_Sepsis_Death_Risk_Prediction_via_Vital_Signs_Time_Series.pdf
+PT3: A Transformer-based Model for Sepsis Death Risk Prediction via Vital Signs Time Series
+1st Ruihong Luo* School of Software Tsinghua University
+Beijing, China lrh21@mails.tsinghua.edu.cn
+2nd Minghui Gong* School of Software Tsinghua University
+Beijing, China gmh19@mails.tsinghua.edu.cn
+3rd Chunping Li School of Software Tsinghua University
+Beijing, China cli@tsinghua.edu.cn
+Abstract—Sepsis is a life-threatening systemic syndrome with a high mortality rate. It is critical for doctors to identify sepsis patients at high risk of death in real time, saving patients and reducing in-hospital mortality. However, current clinical methods use traditional machine learning models to predict the death risk of sepsis patients based on the vital signs and lab test results, which is difficult to achieve real-time prediction. In this work, we propose a novel Transformer-based model named PT3 to predict the death risk of sepsis patients within k hours (k = 6, 24, 48) in the future based only on the vital signs time series that can be collected in real time. In clinical settings, the collection intervals of vital signs time series are usually irregular. To address this challenge, we design a time-aware mechanism by using a time decay function to explore temporal correlations between records at different moments. We further introduce an auto-imputing mechanism to our model by using the masked prediction pre-training task. To enhance the representation learning ability, we propose a similarity prediction task, a self-supervised pre-training method, to pre-train our model with triplet-loss function. We validate the effectiveness of PT3 on two public clinical databases, MIMIC-IV and eICU. Experiments results show that our model has effective prediction performance, whose AUC on MIMIC-IV and eICU datasets achieve 0.9067 and 0.8733 respectively, especially in the next 6 hours, outperforming other state-of-the-art deep learning methods.
+[19]an_attention-based_bidirectional_lstm-cnn_architecture_for_the_early_prediction_of_sepsis.pdf
+a′ = (a − amin)
+(amax − amin) × (maxnew − minnew)
++ minnew (4)
+where amin and amax are the minimum and maximum val-ues of the original data, respectively. maxnew and minnew are the desired maximum and minimum values for the new nor-malised range. In our case, minnew = 0 and maxnew = 1.
+2.2.4 Sequence generation for LSTM
+In our study, we utilised a window size of w = 6 to generate data sequences for each patient, where each sequence encap-sulates six consecutive hours of data. This setup was critical for training our BiLSTM model to predict the onset of sep-sis p hours before it occurs. Specifically, the target variable represents the sepsis status at the w + p hour, coded as 0 for absence and 1 for presence. We explored three predic-tion horizons with p set at 4, 8, and 12h, aiming to assess the model’s forecasting capabilities at varying intervals. This approach allows for a proactive prediction, potentially offer-ing crucial lead time for clinical interventions.
+[20]predico_de_sepse_em_unidade_de_terapia_intensiva_uma_abordagem_de_aprendizado_de_maquina.pdf
+coluna de target que diz respeito a se o paciente, no instante de determinada observação, é identificado com sepse (1) ou não (0). A definição utilizada de sepse é a mais atual, a Sepsis-3 [Singer et al. 2016]. Isto é, uma deterioração em dois pontos no score Sequential Organ Failure Assessment (SOFA) [Vincent et al. 1996] indicando disfunção orgânica e suspeita clı́nica de infecção, dado pela solicitação de hemocultura ou administração intra-venosa de antibióticos.
+O conjunto de dados fornecido é esparso, principalmente os resultados de exames laboratoriais, com mais de 80% da valores nulos. Isso é compreensı́vel, dado que não se realizam coletas para análise a cada hora. Considerando possı́veis fontes de vazamento de informação, a imputação de dados faltantes é realizada por meio de forward fill, no qual o último dado disponı́vel é propagado para instantes de tempo posteriores, visto que as observações em sequência formam uma série temporal.
+[21]an_attention-based_bidirectional_lstm-cnn_architecture_for_the_early_prediction_of_sepsis.pdf
+ab ilit
+y Th
+re sh
+ol d
+D ec
+is io
+n (S
+ep si
+s or
+n ot
+)
+Deep Network (LSTM-CNN)
+EHRs Processed
+data
+Raw data
+Fig. 1 Overall block diagram of our proposed approach. Preprocessing steps and deep network architecture are shown separately in Figs. 2 and 4, respectively
+Vital Signs
+Filter: Patient aged 15 years
+ICU length of stay 12 hours
+Group by length of stay
+Laboratory Tests Demographics
+Mean Imputation (for each patient)
+MA
+Linear Imputation (for each patient)
+Mean Imputation (for each group)
+[22]development_of_a_nomogram_to_predict_30-day_mortality_of_sepsis_patients_with_gastrointestinal_bleeding_an_analysis_of_the_mimic-iv_database.pdf
+In this investigation, only data from the patient’s initial ICU hospitalization were evaluated in this study for patients who had multiple ICU hospitalizations. The baseline characteristics data were obtained as the average value within the first 24 h of admission. Variables with more than 20% missing data were eliminated from this research. For variables with <20% missing data, multiple imputation using the “MICE” package in R was performed to fill in missing values based on other predictor variables. The extracted information mostly consisted of: (1) Demographic characteristics: gender (male, female) and age. (2) Vital signs: heart rate (HR), respiratory rate (RR), temperature (T) and oxygen saturation (SpO2). (3) Laboratory tests: creatinine, glucose, hemoglobin, platelet, lactate, international normalized ratio (INR), albumin, hematocrit (HCT), prothrombin time (PT), BUN, neutrophil (NEUT) and white blood cell (WBC). (4) Blood gas analysis: PH and partial pressure of oxygen (pO2). (5) Score system: SOFA and Simplified Acute Physiology Score II (SAPS II). (6) RBC transfusion, MV ≥ 48h, vasoactive drugs, PN and Endoscope using. (7) Baseline complications: hypertension, diabetes, congestive heart failure (CHF), chronic liver disease (CLD), COPD, and malignancy. The included variable was the average of 24 h of ICU hospitalization. The main result of this study was 30 days of all-cause mortality.
+[23]early_sepsis_mortality_prediction_model_based_on_interpretable_machine_learning_approach_development_and_validation_study.pdf
+Data collection and variable extraction
+With reference to clinical expertise, published literature, and data records in the MIMIC-IV database [11], we gathered the subsequent seven categories of information. (1) Demo-graphic details of the patient, such as gender, age, body mass index (BMI) and more; (2) The following should be assessed Within 24 h of being admitted to the ICU: essential signs including heart rate, average arterial pressure, respiratory rate, and Pao2/fio2 Ratio (P/F); (3) laboratory test outcomes within 24 h after admission to the ICU, such as creatinine, hemoglobin, albumin, lactate, and more; (4) treatment status within 24 h after entering the ICU, such as whether mechani-cal ventilation was performed, renal replacement treatment, etc.; (5) basic illnesses like hypertension, diabetes, chronic obstructive pulmonary disease (COPD), coronary kidney disease (CKD) and others; (6) outcome: ICU in-hospital mortality and (7) A variety of clinical scores within 24 h after ICU admission, including SOFA, SAPS II, and GCS [22]. For variables with multiple measurements in a day, we will in addition record the trend of each variable over time. We set different window lengths for each variable, take the average value in each window, and subtract the value of each window before the last window from the value of the last window, and finally divide it by the total number of win-dows to obtain the mean value of the variable’s trend over the day. To address anomalies in the data, we completely eliminate the apparent outliers. Multivariable imputations were employed to handle missing data. The estimators of the tree are set to 50 with PMM (candidate = 5) strategy, when comes to each field we assume the following Gauss-ian distribution and Poisson distribution. Additional file 3 included variables summary.
+[24]predico_de_sepse_em_unidade_de_terapia_intensiva_uma_abordagem_de_aprendizado_de_maquina.pdf
+Ao ser constatada a presença de valores extremos inconcebı́veis, foi tomada a de-cisão de limitar os sinais vitais dentro de intervalos considerados aceitáveis. Os intervalos adotados foram: frequência cardı́aca entre 30 e 200, oximetria entre 70 e 100, temperatura entre 30 e 41, frequência respiratória entre 10 e 50, pressão sistólica (SBP) entre 50 e 200 e pressão diastólica (DBP) entre 10 e 120.
+Ao decidir pelo descarte de 25 variáveis de resultados laboratoriais, surgiu a preocupação com possı́vel perda de informação revelante. Os exames laboratoriais têm
+[25]machine-learning_models_for_prediction_of_sepsis_patients_mortality.pdf
+tudy design and setting
+he following items in the hospital were recorded and used o build some prediction model: age, gender, weight, vital igns, and laboratory values of patients from the first 24 h f ICU stay, which were extracted using pgAdmin PostgreSQL ools (version 10.17) and Navicat Premium (version 15.0.28). ecause of the high sampling frequency, we use the maxi-um, minimum, and mean values when incorporating the
+haracteristics of vital signs and related laboratory indica-ors. Furthermore, advanced cardiac life support (various asopressors, continuous renal replacement therapy, etc.) nd accompanying diseases (diabetes, arrhythmia, etc.) ere accessed. After that, R software (version 4.1.2, CRAN) as used for further process. As it is common with missing ata in the MIMIC-IV database, we removed the variables ith more than 20% observations missing to facilitate and nsure the study’s accuracy. However, for those with less han 20% missing or randomly missing data, we explored nd visualized them with R Package «DataExplorer» and ackage «mice» for further analysis. Missing values in the ICU-CRD set are also imputed with R Package «mice». We elected all variables in the feature screening part after emoving missing values of more than 20% of items. We
+[26]predicting_30-days_mortality_for_mimic-iii_patients_with_sepsis-3_a_machine_learning_approach_using_xgboost.pdf
+Fig. 1 The detailed process of data extraction
+Page 4 of 14Hou et al. J Transl Med (2020) 18:462
+(ABG) were abstracted. Furthermore, advanced cardiac life support (mechanical ventilation, renal replacement therapy, etc.) and accompanied diseases (diabetes, malig-nant tumour, etc.) were accessed. Because of the high sampling frequency, we use the maximum, minimum and the mean value when incorporating the characteristics of vital signs and related laboratory indicators. Ultimately, we obtained the list of anonymized patients with sepsis from the Table 1 (Additional file 1).
+[27]predico_de_sepse_em_unidade_de_terapia_intensiva_uma_abordagem_de_aprendizado_de_maquina.pdf
+uma frequência inferior aos sinais vitais, eletronicamente adquiridos [Reyna et al. 2019]. Contudo, de acordo com a literatura [Singer et al. 2016], além do lactato, resultados de creatinina, bilirrubina, gasometria e coagulação podem ser indicativos de disfunção orgânica. Decidimos, então, adicionar alguns scores médicos relacionados direta e indi-retamente à sepse. Optou-se por imputar no conjunto de dados o cálculo dos scores: SIRS, SOFA, quick Sequential Organ Failure Assessment (qSOFA) [Singer et al. 2016], Acute physiology and chronic health evaluation (APACHE II) [Knaus et al. 1985], Prehospi-tal Early Sepsis Detection (PRESEP) [Bayer et al. 2015], National Early Warning Score (NEWS) 2 [Royal College of Physicians 2017] e Shock Index [Allgöwer and Burri 1967].
+[28]predico_de_sepse_em_unidade_de_terapia_intensiva_uma_abordagem_de_aprendizado_de_maquina.pdf
+A avaliação do modelo gerado foi feita por meio de três cenários distintos. Pode-se analisar a performance do modelo calculando as métricas sobre a quantidade total de observações disponibilizadas para teste. A segunda opção é realizar um broadcast de uma predição positiva de sepse para os instantes posteriores. A última alternativa é a análise por paciente. Isto é, deseja-se saber, dentre todos os paciente que desenvolvem sepse em algum momento de sua internação na UTI, quantos deles foram identificados pelo modelo. A intenção foi a de avaliar três faces do modelo proposto, a cobertura dos pacientes e a correta identificação precoce da sepse. Assim sendo, após a aplicação de validação cruzada com k-Folds com cinco divisões, obtivemos métricas para o conjunto total de observações de teste e para a visão por paciente como um todo, tal como na Tab. 1.

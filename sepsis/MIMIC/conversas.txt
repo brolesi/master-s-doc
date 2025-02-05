@@ -1,0 +1,12 @@
+b) Se for um problema de classificação
+Se você quer prever a ocorrência de morte (sim ou não), a saída seria categórica:
+
+0 = Sobrevive.
+1 = Óbito.
+a) Se for um problema de regressão
+Você pode prever uma taxa de mortalidade contínua (ex.: probabilidade de óbito ou taxa em %). Nesse caso, a saída do modelo seria um número real entre 0 e 1 (ou 0 e 100, dependendo da escala).
+
+Por exemplo:
+
+Entrada: Sinais vitais ao longo do tempo + características demográficas (idade, sexo, comorbidades).
+Saída: 0.23 → O modelo estima uma chance de 23% de mortalidade.
