@@ -298,3 +298,154 @@ Esta tabela pode ser usada como referência rápida para interpretar os dados em
 - Investigar fatores que podem predispor pacientes a desenvolver sepse nova durante a internação.
 - Examinar as diferenças nos tratamentos e intervenções entre os grupos.
 - Avaliar o impacto do tempo de início da sepse (nova vs. precoce/pré-existente) nos resultados clínicos.
+
+
+-- -------------------------------------------------------------------------------------------------
+-- -------------------------------------------------------------------------------------------------
+-- -------------------------------------------------------------------------------------------------
+
+-- Criar tabela temporária
+-- Criar tabela temporária
+CREATE TABLE MASTER_S_DEGREE.tmp_vital_signs (
+    subject_id INT,
+    stay_id INT,
+    is_sepsis BOOLEAN,
+    is_new_sepsis INT,
+    is_septic_shock INT,
+    charttime TIMESTAMP,
+    hour_bucket TIMESTAMP,
+    heart_rate FLOAT,
+    respiratory_rate FLOAT,
+    spo2 FLOAT,
+    map FLOAT
+);
+
+-- Preencher a tabela temporária
+INSERT INTO MASTER_S_DEGREE.tmp_vital_signs
+SELECT 
+    aap.subject_id,
+    aap.stay_id,
+    aap.is_sepsis,
+    aap.is_new_sepsis,
+    aap.is_septic_shock,
+    ce.charttime,
+    DATE_TRUNC('hour', ce.charttime) AS hour_bucket,
+    CASE WHEN ce.itemid IN (220045, 211) THEN ce.valuenum END AS heart_rate,
+    CASE WHEN ce.itemid IN (220210, 618) THEN ce.valuenum END AS respiratory_rate,
+    CASE WHEN ce.itemid IN (220277, 646) THEN ce.valuenum END AS spo2,
+    CASE WHEN ce.itemid IN (220052, 456) THEN ce.valuenum END AS map
+FROM 
+    MASTER_S_DEGREE.ALL_ADULT_ICU_PATIENTS aap
+JOIN 
+    mimiciv_icu.chartevents ce ON aap.stay_id = ce.stay_id
+WHERE 
+    ce.itemid IN (220045, 211, 220210, 618, 220277, 646, 220052, 456)
+    AND ce.valuenum IS NOT NULL;
+
+-- Criar índices na tabela temporária para melhorar o desempenho da consulta final
+CREATE INDEX idx_tmp_vital_signs_subject_id ON MASTER_S_DEGREE.tmp_vital_signs (subject_id);
+CREATE INDEX idx_tmp_vital_signs_stay_id ON MASTER_S_DEGREE.tmp_vital_signs (stay_id);
+CREATE INDEX idx_tmp_vital_signs_hour_bucket ON MASTER_S_DEGREE.tmp_vital_signs (hour_bucket);
+
+-- ---------------------------
+-- Criar tabela temporária para SOFA scores
+
+-- Recriar a tabela tmp_sofa_score
+DROP TABLE IF EXISTS MASTER_S_DEGREE.tmp_sofa_score;
+CREATE TABLE MASTER_S_DEGREE.tmp_sofa_score AS
+SELECT 
+    stay_id,
+    DATE_TRUNC('hour', starttime) AS hour_bucket,
+    sofa_24hours AS sofa_24hours
+FROM 
+    mimiciv_derived.sofa
+GROUP BY 
+    stay_id, DATE_TRUNC('hour', starttime), sofa_24hours;
+
+-- Criar índices na tabela temporária
+CREATE INDEX idx_tmp_sofa_score_stay_id ON MASTER_S_DEGREE.tmp_sofa_score (stay_id);
+CREATE INDEX idx_tmp_sofa_score_hour_bucket ON MASTER_S_DEGREE.tmp_sofa_score (hour_bucket);
+
+-- ---------------------------
+-- TODO: ESTÁ FALTANDO ALGUNS (65366 x 35352)
+CREATE TABLE MASTER_S_DEGREE.HOURLY_VITAL_SIGNS AS
+WITH sepsis_onset AS (
+    SELECT 
+        stay_id,
+        MIN(CASE WHEN is_sepsis = true THEN hour_bucket END) AS sepsis_onset_time
+    FROM 
+        MASTER_S_DEGREE.tmp_vital_signs
+    GROUP BY 
+        stay_id
+)
+
+SELECT 
+    tvs.subject_id,
+    tvs.stay_id,
+    tvs.is_sepsis,
+    tvs.is_new_sepsis,
+    tvs.is_septic_shock,
+    tvs.hour_bucket,
+    
+    -- Heart Rate
+    AVG(tvs.heart_rate) AS avg_hr,
+    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY tvs.heart_rate) AS median_hr,
+    MIN(tvs.heart_rate) AS min_hr,
+    MAX(tvs.heart_rate) AS max_hr,
+    
+    -- Respiratory Rate
+    AVG(tvs.respiratory_rate) AS avg_rr,
+    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY tvs.respiratory_rate) AS median_rr,
+    MIN(tvs.respiratory_rate) AS min_rr,
+    MAX(tvs.respiratory_rate) AS max_rr,
+    
+    -- SpO2
+    AVG(tvs.spo2) AS avg_spo2,
+    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY tvs.spo2) AS median_spo2,
+    MIN(tvs.spo2) AS min_spo2,
+    MAX(tvs.spo2) AS max_spo2,
+    
+    -- MAP
+    AVG(tvs.map) AS avg_map,
+    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY tvs.map) AS median_map,
+    MIN(tvs.map) AS min_map,
+    MAX(tvs.map) AS max_map,
+
+    -- SOFA Score (24 hours)
+    ss.sofa_24hours,
+
+    -- Sepsis Flag
+    CASE 
+        WHEN so.sepsis_onset_time IS NULL THEN -1
+        WHEN tvs.hour_bucket < so.sepsis_onset_time THEN 0
+        ELSE 1
+    END AS sepsis_flag,
+
+    -- Countdown to Sepsis
+    CASE 
+        WHEN so.sepsis_onset_time IS NULL THEN -1
+        ELSE EXTRACT(EPOCH FROM (tvs.hour_bucket - so.sepsis_onset_time))/3600
+    END AS hours_to_sepsis
+
+FROM 
+    MASTER_S_DEGREE.tmp_vital_signs tvs
+LEFT JOIN 
+    MASTER_S_DEGREE.tmp_sofa_score ss ON tvs.stay_id = ss.stay_id AND tvs.hour_bucket = ss.hour_bucket
+LEFT JOIN
+    sepsis_onset so ON tvs.stay_id = so.stay_id
+GROUP BY 
+    tvs.subject_id, tvs.stay_id, tvs.is_sepsis, tvs.is_new_sepsis, tvs.is_septic_shock, tvs.hour_bucket,
+    ss.sofa_24hours, so.sepsis_onset_time
+ORDER BY 
+    tvs.subject_id, tvs.stay_id, tvs.hour_bucket;
+
+-- Criar índices na tabela final
+CREATE INDEX idx_hourly_vital_signs_subject_id ON MASTER_S_DEGREE.HOURLY_VITAL_SIGNS (subject_id);
+CREATE INDEX idx_hourly_vital_signs_stay_id ON MASTER_S_DEGREE.HOURLY_VITAL_SIGNS (stay_id);
+CREATE INDEX idx_hourly_vital_signs_hour_bucket ON MASTER_S_DEGREE.HOURLY_VITAL_SIGNS (hour_bucket);
+CREATE INDEX idx_hourly_vital_signs_is_sepsis ON MASTER_S_DEGREE.HOURLY_VITAL_SIGNS (is_sepsis);
+CREATE INDEX idx_hourly_vital_signs_is_new_sepsis ON MASTER_S_DEGREE.HOURLY_VITAL_SIGNS (is_new_sepsis);
+CREATE INDEX idx_hourly_vital_signs_is_septic_shock ON MASTER_S_DEGREE.HOURLY_VITAL_SIGNS (is_septic_shock);
+CREATE INDEX idx_hourly_vital_signs_sepsis_flag ON MASTER_S_DEGREE.HOURLY_VITAL_SIGNS (sepsis_flag);
+CREATE INDEX idx_hourly_vital_signs_hours_to_sepsis ON MASTER_S_DEGREE.HOURLY_VITAL_SIGNS (hours_to_sepsis);
+CREATE INDEX idx_hourly_vital_signs_sofa_24hours ON MASTER_S_DEGREE.HOURLY_VITAL_SIGNS (sofa_24hours);
