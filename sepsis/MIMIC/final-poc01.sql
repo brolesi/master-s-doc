@@ -574,6 +574,107 @@ FROM filtered_records
 WHERE row_num <= 48
 ORDER BY subject_id, stay_id, hour_bucket;
 -- -------------------------------------------------------------------------------------------
+CREATE TABLE master_s_degree.avg_hourly_vital_signs AS
+SELECT 
+    subject_id, 
+    stay_id, 
+    is_sepsis, 
+    is_new_sepsis, 
+    is_septic_shock, 
+    hour_bucket, 
+    avg_hr, 
+    avg_rr, 
+    avg_spo2, 
+    avg_map, 
+    sofa_24hours, 
+    sepsis_flag, 
+    hours_to_sepsis
+FROM master_s_degree.hourly_vital_signs_new_sepsis;
+-- -------------------------------------------------------------------------------------------
+
+-- Preencher horas faltantes --------------------------------------------------------------------
+
+
+-- Criação da tabela
+CREATE TABLE IF NOT EXISTS master_s_degree.filled_hourly_vital_signs (
+    subject_id INT,
+    stay_id INT,
+    hour_bucket TIMESTAMP,
+    is_sepsis INT,
+    is_new_sepsis INT,
+    is_septic_shock INT,
+    avg_hr FLOAT,
+    avg_rr FLOAT,
+    avg_spo2 FLOAT,
+    avg_map FLOAT,
+    sofa_24hours INT,
+    sepsis_flag INT,
+    hours_to_sepsis FLOAT,
+    PRIMARY KEY (subject_id, stay_id, hour_bucket)
+);
+
+-- Inserção dos dados
+INSERT INTO master_s_degree.filled_hourly_vital_signs
+WITH RECURSIVE
+time_range AS (
+    SELECT 
+        subject_id, 
+        stay_id, 
+        MIN(hour_bucket) AS start_time,
+        MAX(hour_bucket) AS end_time
+    FROM master_s_degree.avg_hourly_vital_signs
+    GROUP BY subject_id, stay_id
+),
+hour_series AS (
+    SELECT 
+        subject_id, 
+        stay_id, 
+        start_time AS hour_bucket
+    FROM time_range
+
+    UNION ALL
+
+    SELECT 
+        subject_id, 
+        stay_id, 
+        hour_bucket + INTERVAL '1 hour'
+    FROM hour_series
+    WHERE hour_bucket < (SELECT end_time FROM time_range tr WHERE tr.subject_id = hour_series.subject_id AND tr.stay_id = hour_series.stay_id)
+),
+filled_data AS (
+    SELECT 
+        hs.subject_id, 
+        hs.stay_id, 
+        hs.hour_bucket,
+        COALESCE(avs.is_sepsis::int, LAG(avs.is_sepsis::int) OVER (PARTITION BY hs.subject_id, hs.stay_id ORDER BY hs.hour_bucket)) AS is_sepsis,
+        COALESCE(avs.is_new_sepsis::int, LAG(avs.is_new_sepsis::int) OVER (PARTITION BY hs.subject_id, hs.stay_id ORDER BY hs.hour_bucket)) AS is_new_sepsis,
+        COALESCE(avs.is_septic_shock::int, LAG(avs.is_septic_shock::int) OVER (PARTITION BY hs.subject_id, hs.stay_id ORDER BY hs.hour_bucket)) AS is_septic_shock,
+        COALESCE(avs.avg_hr, LAG(avs.avg_hr) OVER (PARTITION BY hs.subject_id, hs.stay_id ORDER BY hs.hour_bucket)) AS avg_hr,
+        COALESCE(avs.avg_rr, LAG(avs.avg_rr) OVER (PARTITION BY hs.subject_id, hs.stay_id ORDER BY hs.hour_bucket)) AS avg_rr,
+        COALESCE(avs.avg_spo2, LAG(avs.avg_spo2) OVER (PARTITION BY hs.subject_id, hs.stay_id ORDER BY hs.hour_bucket)) AS avg_spo2,
+        COALESCE(avs.avg_map, LAG(avs.avg_map) OVER (PARTITION BY hs.subject_id, hs.stay_id ORDER BY hs.hour_bucket)) AS avg_map,
+        COALESCE(avs.sofa_24hours, LAG(avs.sofa_24hours) OVER (PARTITION BY hs.subject_id, hs.stay_id ORDER BY hs.hour_bucket)) AS sofa_24hours,
+        COALESCE(avs.sepsis_flag::int, LAG(avs.sepsis_flag::int) OVER (PARTITION BY hs.subject_id, hs.stay_id ORDER BY hs.hour_bucket)) AS sepsis_flag,
+        COALESCE(avs.hours_to_sepsis, LAG(avs.hours_to_sepsis) OVER (PARTITION BY hs.subject_id, hs.stay_id ORDER BY hs.hour_bucket)) AS hours_to_sepsis
+    FROM hour_series hs
+    LEFT JOIN master_s_degree.avg_hourly_vital_signs avs
+        ON hs.subject_id = avs.subject_id 
+        AND hs.stay_id = avs.stay_id 
+        AND hs.hour_bucket = avs.hour_bucket
+)
+SELECT * FROM filled_data
+ORDER BY subject_id, stay_id, hour_bucket;
+
+-- Criação de índices para melhorar o desempenho (opcional, mas recomendado)
+CREATE INDEX IF NOT EXISTS idx_filled_hourly_vital_signs_subject_stay
+ON master_s_degree.filled_hourly_vital_signs (subject_id, stay_id);
+
+CREATE INDEX IF NOT EXISTS idx_filled_hourly_vital_signs_hour_bucket
+ON master_s_degree.filled_hourly_vital_signs (hour_bucket);
+
+-- ---------------------------------------------------------------------------------------------------
+
+
  -- * **Time Windows**: Data is usually extracted within specific time windows. For instance, vital signs are extracted for the **24 hours prior to a prediction point**[13, 14, 15, 16].  Some studies use a **6-hour sliding window** to capture temporal dependencies in vital signs [17]. Some models are trained to predict mortality or sepsis within a time frame (k) of 6, 24, or 48 hours [13, 18].
 -- Criar a nova tabela com os dados da janela de 6 horas
 CREATE TABLE MASTER_S_DEGREE.VITAL_SIGNS_6H_WINDOW AS
@@ -715,3 +816,53 @@ CREATE INDEX idx_hvs_filtered_trends_is_septic_shock ON MASTER_S_DEGREE.HOURLY_V
 CREATE INDEX idx_hvs_filtered_trends_sepsis_flag ON MASTER_S_DEGREE.HOURLY_VITAL_SIGNS_FILTERED_WITH_TRENDS (sepsis_flag);
 CREATE INDEX idx_hvs_filtered_trends_hours_to_sepsis ON MASTER_S_DEGREE.HOURLY_VITAL_SIGNS_FILTERED_WITH_TRENDS (hours_to_sepsis);
 CREATE INDEX idx_hvs_filtered_trends_sofa_24hours ON MASTER_S_DEGREE.HOURLY_VITAL_SIGNS_FILTERED_WITH_TRENDS (ss_sofa_24hours);
+
+
+
+-- -----------------------------------------------------------------------------------
+
+CREATE TABLE master_s_degree.filtered_hourly_vital_signs_24h_no_outliers AS
+WITH filtered_ranked_vital_signs AS (
+  SELECT 
+    subject_id, 
+    stay_id, 
+    is_sepsis, 
+    is_new_sepsis, 
+    is_septic_shock, 
+    hour_bucket, 
+    avg_hr, 
+    avg_rr, 
+    avg_spo2, 
+    avg_map, 
+    sofa_24hours, 
+    sepsis_flag, 
+    hours_to_sepsis,
+    ROW_NUMBER() OVER (PARTITION BY subject_id, stay_id ORDER BY hour_bucket) AS row_num
+  FROM master_s_degree.hourly_vital_signs
+  WHERE 
+    avg_hr BETWEEN 30 AND 260
+    AND avg_rr BETWEEN 5 AND 70
+    AND avg_spo2 BETWEEN 0 AND 100
+    AND avg_map BETWEEN 10 AND 200
+)
+SELECT 
+  subject_id, 
+  stay_id, 
+  is_sepsis, 
+  is_new_sepsis, 
+  is_septic_shock, 
+  hour_bucket, 
+  avg_hr, 
+  avg_rr, 
+  avg_spo2, 
+  avg_map, 
+  sofa_24hours, 
+  sepsis_flag, 
+  hours_to_sepsis
+FROM filtered_ranked_vital_signs
+WHERE row_num <= 24
+ORDER BY subject_id, stay_id, hour_bucket;
+COPY (
+SELECT * FROM master_s_degree.filtered_hourly_vital_signs_24h_no_outliers WHERE 1=1
+) TO 'C:/Windows/Temp/filtered_hourly_vital_signs_24h_no_outliers.csv' WITH CSV HEADER;
+-- -------------------------------------------------------------------------------------------------------
