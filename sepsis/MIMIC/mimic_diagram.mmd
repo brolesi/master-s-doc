@@ -1,0 +1,63 @@
+graph TD
+    subgraph MIMICIV_ICU
+        D[ICUSTAYS]
+        J[INPUTEVENTS]
+        L[CHARTEVENTS]
+    end
+
+    subgraph MIMICIV_HOSP
+        A[ADMISSIONS]
+        C[PATIENTS]
+    end
+
+    subgraph MIMICIV_DERIVED
+        G[SEPSIS3]
+        R[SOFA]
+    end
+
+    subgraph MASTER_S_DEGREE
+        B[ADULT_PATIENTS]
+        E[FIRST_ICU_STAYS]
+        F[ICU_STAYS_MIN_DURATION]
+        H[SEPSIS_3_PATIENTS]
+        I[SEPSIS_3_PATIENTS_EXCLUDED_PREEXISTING]
+        K[TMP_VASOPRESSOR_USE]
+        M[TMP_HYPOTENSION]
+        N[TMP_HIGH_LACTATE]
+        O[SEPSIS_AND_SHOCK_PATIENTS]
+        P[ALL_ADULT_ICU_PATIENTS]
+        Q[TMP_VITAL_SIGNS]
+        S[TMP_SOFA_SCORE]
+        T[HOURLY_VITAL_SIGNS]
+        U[VITAL_SIGNS_6H_WINDOW]
+        V[HOURLY_VITAL_SIGNS_FILTERED]
+        W[HOURLY_VITAL_SIGNS_FILTERED_WITH_TRENDS]
+    end
+
+    A --> B
+    C --> B
+    D --> E
+    D --> F
+    G --> H
+    G --> I
+    J --> K
+    L --> M
+    L --> N
+    H --> O
+    I --> O
+    K --> O
+    M --> O
+    N --> O
+    B --> P
+    E --> P
+    O --> P
+    F --> P
+    L --> Q
+    P --> Q
+    R --> S
+    Q --> T
+    S --> T
+    T --> U
+    T --> V
+    V --> W
+    S --> W
