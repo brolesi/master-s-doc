@@ -480,7 +480,9 @@ WITH filtered_data AS (
         avg_map,
         sofa_24hours,
         sepsis_flag,
-        hours_to_sepsis
+        hours_to_sepsis,
+        subject_id || '_' || stay_id AS unique_key,
+        ROW_NUMBER() OVER (PARTITION BY subject_id, stay_id ORDER BY hour_bucket ASC) AS row_num
     FROM 
         MASTER_S_DEGREE.HOURLY_VITAL_SIGNS
     WHERE 
@@ -500,41 +502,46 @@ record_counts AS (
     GROUP BY
         subject_id, stay_id
     HAVING
-        COUNT(*) = 24  -- Exatamente 24 registros
-),
-valid_records AS (
-    SELECT 
-        fd.*
-    FROM 
-        filtered_data fd
-    INNER JOIN
-        record_counts rc
-    ON
-        fd.subject_id = rc.subject_id AND fd.stay_id = rc.stay_id
+        COUNT(*) >= 24  -- Pelo menos 24 registros
 )
 SELECT 
-    subject_id,
-    stay_id,
-    is_sepsis,
-    is_new_sepsis,
-    is_septic_shock,
-    hour_bucket,
-    avg_hr,
-    avg_rr,
-    avg_spo2,
-    avg_map,
-    sofa_24hours,
-    sepsis_flag,
-    hours_to_sepsis
+    fd.subject_id,
+    fd.stay_id,
+    fd.is_sepsis,
+    fd.is_new_sepsis,
+    fd.is_septic_shock,
+    fd.hour_bucket,
+    fd.avg_hr,
+    fd.avg_rr,
+    fd.avg_spo2,
+    fd.avg_map,
+    fd.sofa_24hours,
+    fd.sepsis_flag,
+    fd.hours_to_sepsis,
+    fd.unique_key
 FROM 
-    valid_records
+    filtered_data fd
+INNER JOIN
+    record_counts rc
+ON
+    fd.subject_id = rc.subject_id AND fd.stay_id = rc.stay_id
+WHERE
+    fd.row_num <= 24  -- Pegar apenas os 24 primeiros registros
 ORDER BY
-    subject_id, stay_id, hour_bucket;
+    fd.subject_id, fd.stay_id, fd.hour_bucket;
 
 -- Criar índices na nova tabela para melhorar o desempenho das consultas
-CREATE INDEX idx_24h_no_outliers_subject_id ON MASTER_S_DEGREE.HOURLY_VITAL_SIGNS_24H_NO_OUTLIERS (subject_id);
-CREATE INDEX idx_24h_no_outliers_stay_id ON MASTER_S_DEGREE.HOURLY_VITAL_SIGNS_24H_NO_OUTLIERS (stay_id);
-CREATE INDEX idx_24h_no_outliers_hour_bucket ON MASTER_S_DEGREE.HOURLY_VITAL_SIGNS_24H_NO_OUTLIERS (hour_bucket);
-CREATE INDEX idx_24h_no_outliers_is_sepsis ON MASTER_S_DEGREE.HOURLY_VITAL_SIGNS_24H_NO_OUTLIERS (is_sepsis);
-CREATE INDEX idx_24h_no_outliers_is_new_sepsis ON MASTER_S_DEGREE.HOURLY_VITAL_SIGNS_24H_NO_OUTLIERS (is_new_sepsis);
-CREATE INDEX idx_24h_no_outliers_sepsis_flag ON MASTER_S_DEGREE.HOURLY_VITAL_SIGNS_24H_NO_OUTLIERS (sepsis_flag);
+CREATE INDEX idx_24h_no_outliers_subject_id 
+ON MASTER_S_DEGREE.HOURLY_VITAL_SIGNS_24H_NO_OUTLIERS (subject_id);
+CREATE INDEX idx_24h_no_outliers_stay_id 
+ON MASTER_S_DEGREE.HOURLY_VITAL_SIGNS_24H_NO_OUTLIERS (stay_id);
+CREATE INDEX idx_24h_no_outliers_hour_bucket 
+ON MASTER_S_DEGREE.HOURLY_VITAL_SIGNS_24H_NO_OUTLIERS (hour_bucket);
+CREATE INDEX idx_24h_no_outliers_is_sepsis 
+ON MASTER_S_DEGREE.HOURLY_VITAL_SIGNS_24H_NO_OUTLIERS (is_sepsis);
+CREATE INDEX idx_24h_no_outliers_is_new_sepsis 
+ON MASTER_S_DEGREE.HOURLY_VITAL_SIGNS_24H_NO_OUTLIERS (is_new_sepsis);
+CREATE INDEX idx_24h_no_outliers_sepsis_flag 
+ON MASTER_S_DEGREE.HOURLY_VITAL_SIGNS_24H_NO_OUTLIERS (sepsis_flag);
+CREATE INDEX idx_24h_no_outliers_unique_key 
+ON MASTER_S_DEGREE.HOURLY_VITAL_SIGNS_24H_NO_OUTLIERS (unique_key);
