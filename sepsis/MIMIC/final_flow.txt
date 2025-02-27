@@ -492,17 +492,29 @@ WITH filtered_data AS (
         AND avg_spo2 BETWEEN 0 AND 100
         AND avg_map BETWEEN 10 AND 200
 ),
-record_counts AS (
+time_spans AS (
     SELECT
         subject_id,
         stay_id,
+        MIN(hour_bucket) AS first_hour,
+        MAX(hour_bucket) AS last_hour,
+        EXTRACT(EPOCH FROM (MAX(hour_bucket) - MIN(hour_bucket)))/3600 AS hour_span,
         COUNT(*) AS record_count
     FROM
         filtered_data
     GROUP BY
         subject_id, stay_id
-    HAVING
-        COUNT(*) >= 24  -- Pelo menos 24 registros
+),
+valid_pairs AS (
+    SELECT
+        subject_id,
+        stay_id
+    FROM
+        time_spans
+    WHERE
+        (record_count >= 24 OR hour_span >= 24)  -- Pelo menos 24 registros OU diferença de 24 horas
+        AND
+        record_count >= 6  -- E pelo menos 6 pontos de dados
 )
 SELECT 
     fd.subject_id,
@@ -522,11 +534,11 @@ SELECT
 FROM 
     filtered_data fd
 INNER JOIN
-    record_counts rc
+    valid_pairs vp
 ON
-    fd.subject_id = rc.subject_id AND fd.stay_id = rc.stay_id
+    fd.subject_id = vp.subject_id AND fd.stay_id = vp.stay_id
 WHERE
-    fd.row_num <= 24  -- Pegar apenas os 24 primeiros registros
+    fd.row_num <= 24  -- Limitar a 24 registros por par
 ORDER BY
     fd.subject_id, fd.stay_id, fd.hour_bucket;
 
