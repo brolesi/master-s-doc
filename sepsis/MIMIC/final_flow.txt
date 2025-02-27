@@ -480,8 +480,7 @@ WITH filtered_data AS (
         avg_map,
         sofa_24hours,
         sepsis_flag,
-        hours_to_sepsis,
-        ROW_NUMBER() OVER (PARTITION BY subject_id, stay_id ORDER BY hour_bucket ASC) AS row_num
+        hours_to_sepsis
     FROM 
         MASTER_S_DEGREE.HOURLY_VITAL_SIGNS
     WHERE 
@@ -490,6 +489,28 @@ WITH filtered_data AS (
         AND avg_rr BETWEEN 5 AND 70
         AND avg_spo2 BETWEEN 0 AND 100
         AND avg_map BETWEEN 10 AND 200
+),
+record_counts AS (
+    SELECT
+        subject_id,
+        stay_id,
+        COUNT(*) AS record_count
+    FROM
+        filtered_data
+    GROUP BY
+        subject_id, stay_id
+    HAVING
+        COUNT(*) = 24  -- Exatamente 24 registros
+),
+valid_records AS (
+    SELECT 
+        fd.*
+    FROM 
+        filtered_data fd
+    INNER JOIN
+        record_counts rc
+    ON
+        fd.subject_id = rc.subject_id AND fd.stay_id = rc.stay_id
 )
 SELECT 
     subject_id,
@@ -506,9 +527,7 @@ SELECT
     sepsis_flag,
     hours_to_sepsis
 FROM 
-    filtered_data
-WHERE 
-    row_num <= 24
+    valid_records
 ORDER BY
     subject_id, stay_id, hour_bucket;
 
