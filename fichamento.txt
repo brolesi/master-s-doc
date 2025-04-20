@@ -1,0 +1,111 @@
+Assuma o papel de um pesquisador especializado em aprendizado de máquina, com foco em previsão (forecast) de séries temporais.
+
+Contexto
+
+Você deve se posicionar como um especialista em técnicas de machine learning, especificamente em time series forecasting. Seja capaz de abordar temas como pré-processamento de dados, escolha de algoritmos apropriados, avaliação de desempenho do modelo, e ajustes finos dos parâmetros para melhorar a precisão da previsão. A ideia é fornecer orientação detalhada e técnica, tanto para iniciantes quanto para profissionais que já tenham conhecimento da área.
+
+Tópicos Relevantes
+
+Abordagens tradicionais (ex.: ARIMA, ETS)
+Modelos baseados em machine learning (ex.: LSTM, Prophet, RNN, XGBoost)
+Métricas de avaliação (MAPE, RMSE, MAE)
+Estratégias de pré-processamento de dados (normalização, suavização)
+Considerações sobre sazonalidade, tendências, e padronização dos dados
+
+Regras para Resposta
+
+Use linguagem clara e objetiva sem comprometer o rigor técnico.
+Forneça definições e explique conceitos quando aplicável.
+Sempre que necessário, apresente casos de uso e exemplos de previsão de série temporal em diferentes domínios, como finanças, saúde, ou previsão de demanda.
+Inicie pela explicação de conceitos ou etapas envolvidas antes de chegar a recomendações ou resultados.
+
+Output Format
+
+As respostas deveriam ser bem detalhadas, estruturadas em blocos concisos, enfatizando a explicação dos conceitos no início e suas aplicações práticas logo depois. Utilize markdown para estruturar a explicação (como cabeçalhos e listas), para facilitar a leitura.
+
+Faça um fichamento focado em artigos sobre forecast de séries temporais com machine learning, é ideal que alguns pontos estejam bem ajustados ao tema. Veja como cada seção pode ser adaptada:
+
+Tema e problema de pesquisa: Foque na motivação para o uso de machine learning no forecast de séries temporais. Descreva o problema específico que cada artigo está tentando resolver, como melhorias em precisão preditiva, tratamento de sazonalidade, ou adaptação a mudanças de tendência.
+
+Objetivo(s): Destacar o objetivo específico no contexto de previsão de séries temporais, como melhorar a acurácia em relação a modelos clássicos, tratar variações sazonais, ou desenvolver uma abordagem que se adapte a mudanças abruptas nas séries.
+
+Metodologia: Explique o tipo de série temporal e as técnicas de machine learning utilizadas. Detalhe se foram usadas redes neurais (como LSTM ou TFT), modelos ensemble (como XGBoost) ou métodos híbridos, e os motivos para a escolha do modelo. Mencione também os datasets específicos usados, técnicas de pré-processamento e validação de resultados.
+
+Principais resultados: Destaque o desempenho dos modelos de machine learning em relação aos benchmarks clássicos de séries temporais, como ARIMA, SARIMA, ou ETS. Explique o impacto do uso dessas técnicas na acurácia, velocidade de execução ou robustez.
+
+Discussão e conclusões: Observe se o artigo discute limitações do modelo ou se sugere melhorias futuras no uso de machine learning para forecast. Identifique se o artigo propõe avanços teóricos ou práticos, como novos modelos ou ajustes de hiperparâmetros que podem melhorar a previsão.
+
+Aplicabilidade ou relevância: Considere a aplicabilidade dos resultados em contextos específicos, como finanças, meteorologia, saúde ou produção.
+
+
+----
+1-s2.0-S0168192322004452-main_1.txt
+
+### Fichamento do Artigo sobre Forecast de Séries Temporais com Machine Learning para Previsão de Clima em Florestas de Plantação
+
+**Tema e Problema de Pesquisa**
+Este artigo foca na aplicação de modelos de aprendizado de máquina para previsão de temperatura e precipitação em regiões florestais de Mpumalanga, África do Sul, visando otimizar o crescimento de florestas de plantação. A pesquisa é motivada pela necessidade de modelos climáticos regionais mais precisos, uma vez que os modelos globais, como o WorldClim 2.1, apresentam limitações em resoluções locais. O problema específico é desenvolver modelos capazes de capturar variações sazonais e a influência de características topográficas nas condições climáticas locais para suportar práticas de silvicultura de precisão.
+
+**Objetivo(s)**
+O objetivo principal é desenvolver modelos de aprendizado de máquina que prevejam com precisão a temperatura mínima (Tmin), máxima (Tmax) e precipitação em diferentes estações do ano. Esses modelos são projetados para melhorar a adequação de espécies florestais introduzidas ao clima local, com a finalidade de otimizar a produtividade florestal em um contexto de silvicultura de precisão.
+
+**Metodologia**
+Foram coletados dados climáticos de 43 estações meteorológicas para temperatura e 69 estações para precipitação, abrangendo períodos de até 20 anos. Seis abordagens de modelagem foram inicialmente testadas, incluindo regressão linear múltipla e thin-plate spline regression, e quatro modelos de machine learning: regressão linear, K-Nearest Neighbors (KNN), Support Vector Machines (SVM), e Random Forests. Os dados foram divididos em dois subgrupos regionais (Lowveld Escarpment e Highveld), e técnicas de validação cruzada K-fold foram utilizadas para validação dos modelos. A variável dependente foi a temperatura ou precipitação média sazonal, e as variáveis independentes incluíram latitude, longitude, altitude e índices de posição topográfica (TPI).
+
+**Principais Resultados**
+Os modelos de Random Forests e regressão linear apresentaram os melhores desempenhos para prever Tmin e Tmax, com valores de R² entre 0,76 e 0,89 para as regiões e estações testadas. O Random Forest apresentou melhores resultados para Tmin, especialmente em períodos de inverno, enquanto a regressão linear teve uma precisão ligeiramente melhor para Tmax. Para a precipitação, a regressão linear mediana foi a abordagem mais precisa, com R² de até 0,90 para as previsões sazonais. Comparando com o modelo global WorldClim 2.1, os modelos locais foram mais precisos na maioria das medições sazonais.
+
+**Discussão e Conclusões**
+O artigo destaca que a precisão dos modelos regionais foi significativamente impactada por características topográficas, como altitude e longitude, sugerindo que esses fatores desempenham um papel crítico no microclima. As conclusões indicam que modelos locais de aprendizado de máquina podem superar modelos globais em precisão preditiva ao incorporar variáveis específicas da região. O estudo sugere a necessidade de mais dados climáticos locais e a integração colaborativa entre stakeholders para aprimorar o acesso a dados para modelagem climática.
+
+**Aplicabilidade ou Relevância**
+Os resultados são aplicáveis ao setor de silvicultura e podem auxiliar no planejamento de plantações em regiões com climas variáveis. A metodologia usada para desenvolver modelos sazonais de alta resolução pode ser adaptada para outras regiões florestais que enfrentam desafios semelhantes.
+
+----
+
+1-s2.0-S0048969723041621-main.txt
+
+### Fichamento do Artigo sobre Conhecimento Local para Previsão de Chuvas na Agricultura
+
+**Tema e Problema de Pesquisa**  
+Este estudo investiga o uso do conhecimento local (Local Forecast Knowledge, LFK) em previsões de chuva para a agricultura em várias regiões do mundo. A pesquisa é motivada pela necessidade de previsões climáticas precisas para pequenos agricultores, especialmente no Sul Global, onde o acesso a previsões científicas é limitado. O problema específico abordado é identificar e documentar os indicadores ambientais locais utilizados para previsão de chuvas, visando melhorar a tomada de decisão agrícola.
+
+**Objetivo(s)**  
+O objetivo principal é mapear a distribuição e o uso de LFK globalmente e explorar como os pequenos agricultores utilizam indicadores locais para prever a chuva. O estudo busca evidenciar o valor do LFK em regiões onde as previsões científicas (Scientific Forecast Knowledge, SFK) são inacessíveis ou inadequadas para necessidades locais.
+
+**Metodologia**  
+Foi realizada uma revisão sistemática da literatura, com busca em bases de dados como Scopus, Web of Science e Google Scholar, para identificar estudos sobre LFK. Dos 3945 artigos iniciais, 59 foram selecionados após triagem. Esses artigos foram analisados para identificar os tipos de indicadores locais (como animais, meteorológicos, plantas e fenômenos astronômicos) e os locais onde são usados, abrangendo regiões da África, Ásia, América do Norte e América do Sul.
+
+**Principais Resultados**  
+O estudo identificou 1349 indicadores locais usados por pequenos agricultores para previsão de clima, com a maioria concentrada na África e Ásia. Indicadores baseados em animais (38%) e fenômenos meteorológicos (30%) foram os mais frequentes, seguidos por plantas (17%) e astronomia (12%). No curto prazo, esses indicadores são úteis para previsão diária, enquanto indicadores vegetais e astronômicos são mais usados para previsões sazonais. O LFK mostrou-se especialmente eficaz em contextos onde o SFK não atende as especificidades locais.
+
+**Discussão e Conclusões**  
+O artigo discute a importância de integrar o LFK ao SFK para uma previsão mais acessível e precisa em regiões rurais. A falta de previsões científicas locais e a complexidade de interpretação dessas previsões levam os agricultores a confiarem no LFK. O estudo sugere que o desenvolvimento de bases de dados digitais para o LFK poderia ajudar a preservar e promover esse conhecimento, incentivando a pesquisa futura sobre integração de sistemas de previsão.
+
+**Aplicabilidade ou Relevância**  
+Os resultados têm grande relevância para a agricultura em regiões dependentes de chuvas. A criação de uma base digital de LFK pode auxiliar em futuras pesquisas e na formulação de políticas que integrem conhecimento científico e local, oferecendo melhores ferramentas de previsão climática para agricultores no Sul Global.
+
+----
+
+Bharadiya24122023JERR98594_1.txt
+
+
+### Fichamento do Artigo sobre Previsão de Produtividade de Culturas Utilizando Dados de Sensoriamento Remoto, Fatores Agrários e Abordagens de Machine Learning
+
+**Tema e Problema de Pesquisa**  
+Este artigo aborda a previsão de produtividade de culturas agrícolas antes da colheita, utilizando dados de sensoriamento remoto e fatores agrários combinados com técnicas de machine learning. A pesquisa é motivada pela importância de previsões precisas de rendimento agrícola para a formulação de políticas alimentares, preços de mercado e gerenciamento de desastres. O problema específico é desenvolver um modelo de machine learning que possa extrair automaticamente características de dados de sensoriamento remoto e variáveis ambientais para melhorar a acurácia da previsão de produtividade.
+
+**Objetivo(s)**  
+O objetivo principal é avaliar o impacto de variáveis ambientais e índices de vegetação na produtividade das culturas, explorando o uso de machine learning para extrair insights a partir desses dados. O estudo visa identificar os melhores modelos de aprendizado profundo que possam integrar fatores climáticos e vegetação para prever o rendimento agrícola com alta precisão.
+
+**Metodologia**  
+Foi realizada uma revisão de literatura entre 2011 e 2022 sobre técnicas de machine learning e dados de sensoriamento remoto aplicados na previsão de produtividade de culturas. A pesquisa utilizou abordagens com redes neurais profundas (deep learning), especialmente Convolutional Neural Networks (CNN) e Long Short-Term Memory (LSTM), e métodos combinados, como CNN-LSTM, para capturar padrões temporais e espaciais. As variáveis envolvem índices de vegetação derivados de imagens de satélite (como NDVI) e parâmetros meteorológicos.
+
+**Principais Resultados**  
+O estudo constatou que o uso de índices de vegetação, como NDVI e GVI, combinados com dados climáticos, melhora significativamente a acurácia da previsão de rendimento agrícola. Os modelos de aprendizado profundo, especialmente CNN e LSTM, mostraram desempenho superior em relação aos métodos tradicionais de regressão e redes neurais simples ao prever o rendimento com alta precisão. A combinação de CNN com LSTM (CNN-LSTM) foi particularmente eficaz em cenários com alta variabilidade temporal e espacial.
+
+**Discussão e Conclusões**  
+O artigo conclui que a combinação de dados de sensoriamento remoto com modelos de deep learning oferece um método robusto para prever a produtividade agrícola. A pesquisa destaca a importância de integrar métodos baseados em redes neurais profundas para melhorar a eficiência da previsão em larga escala. Além disso, sugere-se que mais pesquisas sejam conduzidas para explorar outros índices de vegetação e aumentar a capacidade de generalização dos modelos para diferentes regiões e tipos de culturas.
+
+**Aplicabilidade ou Relevância**  
+Os resultados são altamente relevantes para a agricultura de precisão, permitindo o planejamento antecipado de políticas de segurança alimentar e o gerenciamento de cadeias de suprimentos em resposta a mudanças ambientais. A metodologia pode ser aplicada em regiões agrícolas ao redor do mundo, facilitando decisões estratégicas na agricultura e contribuindo para a sustentabilidade alimentar.
